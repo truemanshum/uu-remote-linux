@@ -36,9 +36,18 @@
 #define UUR_RECORD_KEYBOARD 3u
 
 static UINT(WINAPI *original_send_input)(UINT, LPINPUT, int);
+static BOOL(WINAPI *original_get_cursor_info)(PCURSORINFO);
+static BOOL(WINAPI *original_get_cursor_pos)(LPPOINT);
 static HRESULT(WINAPI *original_create_dxgi_factory1)(REFIID, void **);
 static FARPROC(WINAPI *original_get_proc_address)(HMODULE, LPCSTR);
 UINT WINAPI hook_send_input(UINT count, LPINPUT inputs, int size);
+BOOL WINAPI hook_get_cursor_info(PCURSORINFO cursor_info);
+BOOL WINAPI hook_get_cursor_pos(LPPOINT point);
+
+static volatile LONG cursor_info_calls = 0;
+static volatile LONG tracked_cursor_valid = 0;
+static volatile LONG tracked_cursor_x = 0;
+static volatile LONG tracked_cursor_y = 0;
 
 static volatile LONG dxgi_factories_patched = 0;
 static volatile LONG dxgi_adapters_patched = 0;
@@ -329,6 +338,96 @@ static BOOL source_is_screen_dc(HDC source)
            GetDeviceCaps(source, TECHNOLOGY) == DT_RASDISPLAY;
 }
 
+static void record_tracked_cursor_motion(int absolute, LONG dx, LONG dy)
+{
+    int width = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    int height = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (width <= 0)
+        width = GetSystemMetrics(SM_CXSCREEN);
+    if (height <= 0)
+        height = GetSystemMetrics(SM_CYSCREEN);
+    if (width <= 1)
+        width = 1920;
+    if (height <= 1)
+        height = 1080;
+
+    if (absolute) {
+        LONG clamped_dx = dx < 0 ? 0 : (dx > 65535 ? 65535 : dx);
+        LONG clamped_dy = dy < 0 ? 0 : (dy > 65535 ? 65535 : dy);
+        LONG x = (LONG)(((int64_t)clamped_dx * (width - 1)) / 65535);
+        LONG y = (LONG)(((int64_t)clamped_dy * (height - 1)) / 65535);
+        InterlockedExchange(&tracked_cursor_x, x);
+        InterlockedExchange(&tracked_cursor_y, y);
+        InterlockedExchange(&tracked_cursor_valid, 1);
+    } else if (InterlockedCompareExchange(&tracked_cursor_valid, 0, 0)) {
+        LONG x = InterlockedCompareExchange(&tracked_cursor_x, 0, 0) + dx;
+        LONG y = InterlockedCompareExchange(&tracked_cursor_y, 0, 0) + dy;
+        if (x < 0)
+            x = 0;
+        else if (x >= width)
+            x = width - 1;
+        if (y < 0)
+            y = 0;
+        else if (y >= height)
+            y = height - 1;
+        InterlockedExchange(&tracked_cursor_x, x);
+        InterlockedExchange(&tracked_cursor_y, y);
+    }
+}
+
+BOOL WINAPI hook_get_cursor_pos(LPPOINT point)
+{
+    BOOL ok = FALSE;
+    if (point == NULL)
+        return FALSE;
+    if (original_get_cursor_pos != NULL)
+        ok = original_get_cursor_pos(point);
+    else
+        ok = GetCursorPos(point);
+    if (!ok && InterlockedCompareExchange(&tracked_cursor_valid, 0, 0)) {
+        point->x = InterlockedCompareExchange(&tracked_cursor_x, 0, 0);
+        point->y = InterlockedCompareExchange(&tracked_cursor_y, 0, 0);
+        return TRUE;
+    }
+    return ok;
+}
+
+/* Keep the controlled desktop cursor reported as CURSOR_SHOWING with a valid
+ * HCURSOR so the Windows UU Remote controller remains in normal desktop
+ * pointer mode instead of locking the local Windows cursor via ClipCursor
+ * (FPS relative-mouse grab mode). */
+BOOL WINAPI hook_get_cursor_info(PCURSORINFO cursor_info)
+{
+    BOOL ok = FALSE;
+    InterlockedIncrement(&cursor_info_calls);
+    if (cursor_info == NULL || cursor_info->cbSize < sizeof(CURSORINFO))
+        return original_get_cursor_info != NULL
+            ? original_get_cursor_info(cursor_info)
+            : FALSE;
+
+    if (original_get_cursor_info != NULL)
+        ok = original_get_cursor_info(cursor_info);
+    else
+        ok = GetCursorInfo(cursor_info);
+
+    if (!ok) {
+        ZeroMemory(&cursor_info->ptScreenPos, sizeof(POINT));
+        (void)hook_get_cursor_pos(&cursor_info->ptScreenPos);
+    } else if (InterlockedCompareExchange(&tracked_cursor_valid, 0, 0) &&
+               cursor_info->ptScreenPos.x == 0 &&
+               cursor_info->ptScreenPos.y == 0) {
+        cursor_info->ptScreenPos.x =
+            InterlockedCompareExchange(&tracked_cursor_x, 0, 0);
+        cursor_info->ptScreenPos.y =
+            InterlockedCompareExchange(&tracked_cursor_y, 0, 0);
+    }
+
+    cursor_info->flags = CURSOR_SHOWING;
+    if (cursor_info->hCursor == NULL)
+        cursor_info->hCursor = LoadCursorA(NULL, (LPCSTR)IDC_ARROW);
+    return TRUE;
+}
+
 /* GDI screen captures do not include the X11 hardware cursor.  Keep the
  * cursor visible in the fallback path used on X11 by compositing Wine's
  * current cursor onto the capture destination after the desktop blit. */
@@ -350,8 +449,8 @@ static void draw_cursor_overlay(HDC hdc_dest, int x, int y, int width, int heigh
         return;
     ZeroMemory(&cursor, sizeof(cursor));
     cursor.cbSize = sizeof(cursor);
-    if (!GetCursorInfo(&cursor) || !(cursor.flags & CURSOR_SHOWING) ||
-        !GetCursorPos(&position))
+    if (!hook_get_cursor_info(&cursor) || !(cursor.flags & CURSOR_SHOWING) ||
+        !hook_get_cursor_pos(&position))
         return;
     /* Wine can report a visible cursor with a null handle until the first
      * real window has selected a class cursor.  A generic arrow is preferable
@@ -590,6 +689,8 @@ static FARPROC WINAPI hook_get_proc_address(HMODULE module, LPCSTR name)
     union {
         FARPROC generic;
         UINT(WINAPI *send_input)(UINT, LPINPUT, int);
+        BOOL(WINAPI *get_cursor_info)(PCURSORINFO);
+        BOOL(WINAPI *get_cursor_pos)(LPPOINT);
         BOOL(WINAPI *bit_blt)(HDC, int, int, int, int, HDC, int, int, DWORD);
         BOOL(WINAPI *stretch_blt)(HDC, int, int, int, int, HDC, int, int,
                                   int, int, DWORD);
@@ -600,6 +701,14 @@ static FARPROC WINAPI hook_get_proc_address(HMODULE module, LPCSTR name)
         return resolved;
     if (lstrcmpiA(name, "SendInput") == 0) {
         replacement.send_input = hook_send_input;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "GetCursorInfo") == 0) {
+        replacement.get_cursor_info = hook_get_cursor_info;
+        return replacement.generic;
+    }
+    if (lstrcmpiA(name, "GetCursorPos") == 0) {
+        replacement.get_cursor_pos = hook_get_cursor_pos;
         return replacement.generic;
     }
     if (lstrcmpiA(name, "BitBlt") == 0) {
@@ -804,9 +913,13 @@ UINT WINAPI hook_send_input(UINT count, LPINPUT inputs, int size)
                     if (flags & MOUSEEVENTF_ABSOLUTE) {
                         /* Preserve Windows' normalized coordinate space. The
                          * selected Linux backend performs the final mapping. */
+                        record_tracked_cursor_motion(1, input->mi.dx,
+                                                     input->mi.dy);
                         send_record(UUR_RECORD_MOUSE, 0xffff /*motion*/, 1,
                                     input->mi.dx, input->mi.dy);
                     } else {
+                        record_tracked_cursor_motion(0, input->mi.dx,
+                                                     input->mi.dy);
                         send_record(UUR_RECORD_MOUSE, 0xffff /*motion*/, 0,
                                     input->mi.dx, input->mi.dy);
                     }
@@ -869,6 +982,12 @@ static int patch_module_iat(HMODULE base)
             if (lstrcmpiA(name->Name, "SendInput") == 0) {
                 hook_fn = (void *)hook_send_input;
                 original_slot = (void **)&original_send_input;
+            } else if (lstrcmpiA(name->Name, "GetCursorInfo") == 0) {
+                hook_fn = (void *)hook_get_cursor_info;
+                original_slot = (void **)&original_get_cursor_info;
+            } else if (lstrcmpiA(name->Name, "GetCursorPos") == 0) {
+                hook_fn = (void *)hook_get_cursor_pos;
+                original_slot = (void **)&original_get_cursor_pos;
             } else if (lstrcmpiA(name->Name, "BitBlt") == 0) {
                 hook_fn = (void *)hook_bit_blt;
                 original_slot = (void **)&original_bit_blt;
@@ -886,7 +1005,8 @@ static int patch_module_iat(HMODULE base)
                 continue;
             if (thunk->u1.Function == (uintptr_t)hook_fn)
                 continue;
-            *original_slot = (void *)thunk->u1.Function;
+            if (*original_slot == NULL)
+                *original_slot = (void *)thunk->u1.Function;
             DWORD old_protect = 0;
             if (!VirtualProtect(&thunk->u1.Function, sizeof(thunk->u1.Function),
                                 PAGE_READWRITE, &old_protect))
@@ -934,11 +1054,12 @@ static DWORD WINAPI patch_watchdog(LPVOID parameter)
         if (f != NULL) {
             fprintf(f,
                     "pid=%lu iat=%ld dxgi_f=%ld dxgi_a=%ld dxgi_o=%ld dup=%ld\n\
-                     calls=%ld rendered=%ld fallbacks=%ld\n",
+                     calls=%ld rendered=%ld fallbacks=%ld cursor_info=%ld\n",
                     GetCurrentProcessId(), iat_hooks_installed,
                     dxgi_factories_patched, dxgi_adapters_patched,
                     dxgi_outputs_patched, dxgi_duplicate_calls,
-                    capture_calls, capture_rendered, capture_fallbacks);
+                    capture_calls, capture_rendered, capture_fallbacks,
+                    cursor_info_calls);
             fclose(f);
         }
     }

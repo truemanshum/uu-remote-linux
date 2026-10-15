@@ -141,6 +141,18 @@ int main(void)
         return 10;
     }
 
+    CURSORINFO cursor_info;
+    ZeroMemory(&cursor_info, sizeof(cursor_info));
+    cursor_info.cbSize = sizeof(cursor_info);
+    if (!GetCursorInfo(&cursor_info) ||
+        !(cursor_info.flags & CURSOR_SHOWING) ||
+        cursor_info.hCursor == NULL) {
+        fprintf(stderr, "GetCursorInfo hook failed (flags=%lu hCursor=%p)\n",
+                (unsigned long)cursor_info.flags,
+                (void *)cursor_info.hCursor);
+        return 11;
+    }
+
     move_absolute(200, 200);
     Sleep(400);
     move_absolute(700, 500);
