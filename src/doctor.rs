@@ -99,28 +99,40 @@ fn library_present(soname: &str) -> bool {
             })
 }
 
-fn runtime_component_present(name: &str) -> bool {
-    let mut candidates = vec![
-        std::path::PathBuf::from("/usr/lib/uur/hook").join(name),
-        std::path::PathBuf::from("/usr/local/lib/uur/hook").join(name),
-    ];
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(
-            std::path::PathBuf::from(home)
-                .join(".local/lib/uur/hook")
-                .join(name),
-        );
-    }
+fn hook_runtime_candidates() -> Vec<std::path::PathBuf> {
+    let mut candidates = Vec::new();
     if let Ok(executable) = std::env::current_exe() {
         if let Some(directory) = executable.parent() {
-            candidates.push(directory.join("../lib/uur/hook").join(name));
-            candidates.push(directory.join("../../build/hook").join(name));
+            candidates.push(directory.join("../lib/uur/hook"));
+            candidates.push(directory.join("../../build/hook"));
         }
     }
-    if let Ok(directory) = std::env::current_dir() {
-        candidates.push(directory.join("build/hook").join(name));
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(std::path::PathBuf::from(home).join(".local/lib/uur/hook"));
     }
-    candidates.into_iter().any(|path| path.is_file())
+    candidates.push(std::path::PathBuf::from("/usr/local/lib/uur/hook"));
+    candidates.push(std::path::PathBuf::from("/usr/lib/uur/hook"));
+    if let Ok(directory) = std::env::current_dir() {
+        candidates.push(directory.join("build/hook"));
+    }
+    candidates
+}
+
+fn hook_runtime_inventory<'a>(
+    candidates: impl IntoIterator<Item = &'a std::path::PathBuf>,
+) -> (Option<&'a std::path::PathBuf>, Vec<&'static str>) {
+    candidates
+        .into_iter()
+        .map(|directory| {
+            let missing = crate::session::HOOK_COMPONENTS
+                .iter()
+                .copied()
+                .filter(|component| !directory.join(component).is_file())
+                .collect::<Vec<_>>();
+            (Some(directory), missing)
+        })
+        .min_by_key(|(_, missing)| missing.len())
+        .unwrap_or_else(|| (None, crate::session::HOOK_COMPONENTS.to_vec()))
 }
 
 fn portal_capabilities() -> (bool, bool, String) {
@@ -279,33 +291,30 @@ pub fn report() -> Result<()> {
         ),
     );
 
-    let terminal_proxy = runtime_component_present("uur-terminal-proxy.exe");
-    let terminal_detail = if terminal_proxy {
-        t!("doctor.present").to_string()
+    let hook_candidates = hook_runtime_candidates();
+    let (hook_directory, missing_hook_components) = hook_runtime_inventory(&hook_candidates);
+    let hook_detail = if missing_hook_components.is_empty() {
+        format!(
+            "all {} components present in {}",
+            crate::session::HOOK_COMPONENTS.len(),
+            hook_directory
+                .map(|directory| directory.display().to_string())
+                .unwrap_or_else(|| "unknown directory".to_string())
+        )
     } else {
-        t!("doctor.terminal_missing").to_string()
+        format!(
+            "missing from {}: {}",
+            hook_directory
+                .map(|directory| directory.display().to_string())
+                .unwrap_or_else(|| "all candidate directories".to_string()),
+            missing_hook_components.join(", ")
+        )
     };
     line(
-        ok(!terminal_proxy),
-        "native terminal adapter",
-        &terminal_detail,
+        ok(!missing_hook_components.is_empty()),
+        "hook runtime",
+        &hook_detail,
     );
-
-    let mux_proxy = runtime_component_present("uur-mux-proxy.exe");
-    let mux_detail = if mux_proxy {
-        t!("doctor.present").to_string()
-    } else {
-        t!("doctor.terminal_missing").to_string()
-    };
-    line(ok(!mux_proxy), "terminal session adapter", &mux_detail);
-
-    let launch_proxy = runtime_component_present("uur-launch-proxy.exe");
-    let launch_detail = if launch_proxy {
-        t!("doctor.present").to_string()
-    } else {
-        t!("doctor.launcher_missing").to_string()
-    };
-    line(ok(!launch_proxy), "UU Quick Launch adapter", &launch_detail);
     let has_application_launcher = command_present("gio") || command_present("gtk-launch");
     let application_launcher_detail = if has_application_launcher {
         t!("doctor.present").to_string()
@@ -344,8 +353,11 @@ pub fn report() -> Result<()> {
 
     // Report the configured policy; portal properties do not validate that
     // the compositor can successfully create an authorized session.
-    let session_type = std::env::var("XDG_SESSION_TYPE").unwrap_or_default();
-    let on_wayland = session_type == "wayland" || std::env::var_os("WAYLAND_DISPLAY").is_some();
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    let on_wayland = crate::input::is_wayland_session(
+        session_type.as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+    );
     let configured = crate::config::Config::load()?;
     line(
         "info",
@@ -423,4 +435,76 @@ pub fn report() -> Result<()> {
     println!();
     println!("{}", t!("doctor.footer"));
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::hook_runtime_inventory;
+    use crate::session::HOOK_COMPONENTS;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    struct TestDirectory(PathBuf);
+
+    impl TestDirectory {
+        fn create() -> Self {
+            static NEXT: AtomicU64 = AtomicU64::new(0);
+            for _ in 0..32 {
+                let path = std::env::temp_dir().join(format!(
+                    "uur-doctor-hook-{}-{}",
+                    std::process::id(),
+                    NEXT.fetch_add(1, Ordering::Relaxed)
+                ));
+                match std::fs::create_dir(&path) {
+                    Ok(()) => return Self(path),
+                    Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                    Err(error) => panic!("creating test directory: {error}"),
+                }
+            }
+            panic!("could not create a unique test directory");
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn hook_inventory_requires_all_components_in_one_directory() {
+        let first = TestDirectory::create();
+        let second = TestDirectory::create();
+        for component in &HOOK_COMPONENTS[..3] {
+            std::fs::write(first.path().join(component), b"test").unwrap();
+        }
+        for component in &HOOK_COMPONENTS[3..] {
+            std::fs::write(second.path().join(component), b"test").unwrap();
+        }
+        let candidates = vec![first.path().to_path_buf(), second.path().to_path_buf()];
+
+        let (_, missing) = hook_runtime_inventory(&candidates);
+
+        assert!(!missing.is_empty());
+    }
+
+    #[test]
+    fn hook_inventory_selects_a_complete_later_directory() {
+        let partial = TestDirectory::create();
+        let complete = TestDirectory::create();
+        std::fs::write(partial.path().join(HOOK_COMPONENTS[0]), b"test").unwrap();
+        for component in HOOK_COMPONENTS {
+            std::fs::write(complete.path().join(component), b"test").unwrap();
+        }
+        let candidates = vec![partial.path().to_path_buf(), complete.path().to_path_buf()];
+
+        let (directory, missing) = hook_runtime_inventory(&candidates);
+
+        assert_eq!(directory.map(PathBuf::as_path), Some(complete.path()));
+        assert!(missing.is_empty());
+    }
 }

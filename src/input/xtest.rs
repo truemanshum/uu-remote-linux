@@ -28,6 +28,10 @@ pub struct XtestBackend {
 impl XtestBackend {
     pub fn connect() -> Result<Self> {
         let (conn, screen) = x11rb::connect(None).context("connecting to X display")?;
+        conn.xtest_get_version(2, 2)
+            .context("querying XTEST extension")?
+            .reply()
+            .context("XTEST extension unavailable")?;
         Ok(Self {
             conn,
             screen,
@@ -48,7 +52,9 @@ impl XtestBackend {
     fn fake(&self, kind: u8, detail: u8, x: i16, y: i16) -> Result<()> {
         self.conn
             .xtest_fake_input(kind, detail, 0, self.root(), x, y, 0)
-            .context("XTestFakeInput")?;
+            .context("sending XTestFakeInput")?
+            .check()
+            .context("XTestFakeInput rejected by X server")?;
         self.conn.flush()?;
         Ok(())
     }
@@ -143,56 +149,8 @@ impl XtestBackend {
     /// invariant keysym subset.  Layout-aware remapping for non-representable
     /// keys is Phase 2 together with the semantic text path.
     fn vkey_to_keycode(&self, vkey: u16) -> Result<Keycode> {
-        let base = (vkey & 0xff) as u32;
-
-        let keysym: u32 = match base {
-            0x08 => 0xff08,                        // BackSpace
-            0x09 => 0xff09,                        // Tab
-            0x0d => 0xff0d,                        // Return
-            0x13 => 0xff13,                        // Pause
-            0x14 => 0xffe5,                        // Caps Lock
-            0x1b => 0xff1b,                        // Escape
-            0x20 => 0x0020,                        // Space
-            0x21 => 0xff55,                        // Prior
-            0x22 => 0xff56,                        // Next
-            0x23 => 0xff57,                        // End
-            0x24 => 0xff50,                        // Home
-            0x25 => 0xff51,                        // Left
-            0x26 => 0xff52,                        // Up
-            0x27 => 0xff53,                        // Right
-            0x28 => 0xff54,                        // Down
-            0x2d => 0xffff,                        // Insert
-            0x2e => 0xff9f,                        // Delete (keypad-style)
-            0x30..=0x39 => base,                   // 0-9
-            0x41..=0x5a => base + 0x20,            // A-Z -> lowercase keysyms
-            0x60..=0x69 => 0xffb0 + (base - 0x60), // KP_0..KP_9
-            0x6a => 0xffaa,                        // KP multiply
-            0x6b => 0xffab,                        // KP add
-            0x6d => 0xffad,                        // KP subtract
-            0x6e => 0xffae,                        // KP decimal
-            0x6f => 0xffaf,                        // KP divide
-            0x70..=0x87 => 0xffbe + (base - 0x70), // F1..F24
-            0xa0 => 0xffe1,                        // Shift L
-            0xa1 => 0xffe2,                        // Shift R
-            0xa2 => 0xffe3,                        // Control L
-            0xa3 => 0xffe4,                        // Control R
-            0xa4 => 0xffe9,                        // Alt L
-            0xa5 => 0xffea,                        // Alt R
-            0x5b => 0xffeb,                        // Meta L
-            0x5c => 0xffec,                        // Meta R
-            0xba => 0x3b,                          // ;
-            0xbb => 0x3d,                          // =
-            0xbc => 0x2c,                          // ,
-            0xbd => 0x2d,                          // -
-            0xbe => 0x2e,                          // .
-            0xbf => 0x2f,                          // /
-            0xc0 => 0x60,                          // `
-            0xdb => 0x5b,                          // [
-            0xdc => 0x5c,                          // backslash
-            0xdd => 0x5d,                          // ]
-            0xde => 0x27,                          // '
-            _ => 0,
-        };
+        let base = u32::from(vkey & 0xff);
+        let keysym = vkey_to_keysym(vkey);
 
         let setup = self.conn.setup();
         let min = setup.min_keycode;
@@ -203,16 +161,99 @@ impl XtestBackend {
             .reply()?;
 
         if keysym != 0 {
-            let per = map.keysyms_per_keycode.max(1) as usize;
+            let per = usize::from(map.keysyms_per_keycode.max(1));
             for (index, chunk) in map.keysyms.chunks(per).enumerate() {
                 if chunk.contains(&keysym) {
-                    return Ok(min + index as Keycode);
+                    return Ok(min + Keycode::try_from(index)?);
                 }
             }
         }
 
         // Layout does not represent this key: nearest identity fallback
         // keeps events flowing instead of dropping them silently.
-        Ok(base as Keycode)
+        Ok(Keycode::try_from(base)?)
+    }
+}
+
+fn vkey_to_keysym(vkey: u16) -> u32 {
+    let base = u32::from(vkey & 0xff);
+    match base {
+        0x08 => 0xff08, // BackSpace
+        0x09 => 0xff09, // Tab
+        0x0d => 0xff0d, // Return
+        0x10 => 0xffe1,
+        0x11 => 0xffe3,
+        0x12 => 0xffe9,
+        0x13 => 0xff13, // Pause
+        0x14 => 0xffe5, // Caps Lock
+        0x1b => 0xff1b, // Escape
+        0x20 => 0x0020, // Space
+        0x21 => 0xff55, // Prior
+        0x22 => 0xff56, // Next
+        0x23 => 0xff57, // End
+        0x24 => 0xff50, // Home
+        0x25 => 0xff51, // Left
+        0x26 => 0xff52, // Up
+        0x27 => 0xff53, // Right
+        0x28 => 0xff54, // Down
+        0x2d => 0xff63, // Insert
+        0x2e => 0xffff,
+        0x30..=0x39 => base,                   // 0-9
+        0x41..=0x5a => base + 0x20,            // A-Z -> lowercase keysyms
+        0x60..=0x69 => 0xffb0 + (base - 0x60), // KP_0..KP_9
+        0x6a => 0xffaa,                        // KP multiply
+        0x6b => 0xffab,                        // KP add
+        0x6d => 0xffad,                        // KP subtract
+        0x6e => 0xffae,                        // KP decimal
+        0x6f => 0xffaf,                        // KP divide
+        0x70..=0x87 => 0xffbe + (base - 0x70), // F1..F24
+        0xa0 => 0xffe1,                        // Shift L
+        0xa1 => 0xffe2,                        // Shift R
+        0xa2 => 0xffe3,                        // Control L
+        0xa3 => 0xffe4,                        // Control R
+        0xa4 => 0xffe9,                        // Alt L
+        0xa5 => 0xffea,                        // Alt R
+        0x5b => 0xffeb,                        // Meta L
+        0x5c => 0xffec,                        // Meta R
+        0xba => 0x3b,                          // ;
+        0xbb => 0x3d,                          // =
+        0xbc => 0x2c,                          // ,
+        0xbd => 0x2d,                          // -
+        0xbe => 0x2e,                          // .
+        0xbf => 0x2f,                          // /
+        0xc0 => 0x60,                          // `
+        0xdb => 0x5b,                          // [
+        0xdc => 0x5c,                          // backslash
+        0xdd => 0x5d,                          // ]
+        0xde => 0x27,                          // '
+        _ => 0,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{vkey_to_keysym, InputBackend, XtestBackend};
+
+    #[test]
+    fn generic_modifiers_match_hook_virtual_keys() {
+        assert_eq!(vkey_to_keysym(0x10), 0xffe1);
+        assert_eq!(vkey_to_keysym(0x11), 0xffe3);
+        assert_eq!(vkey_to_keysym(0x12), 0xffe9);
+    }
+
+    #[test]
+    fn insert_and_delete_use_standard_non_keypad_keysyms() {
+        assert_eq!(vkey_to_keysym(0x2d), 0xff63);
+        assert_eq!(vkey_to_keysym(0x2e), 0xffff);
+    }
+
+    #[test]
+    #[ignore = "requires an X server with the XTEST extension"]
+    fn live_xtest_connects_and_checks_fake_input() {
+        let mut backend = XtestBackend::connect().unwrap();
+
+        backend.motion(false, 0, 0).unwrap();
+        backend.key(0x10, true).unwrap();
+        backend.key(0x10, false).unwrap();
     }
 }

@@ -28,7 +28,7 @@ fn rotate_session_log() {
 
 /// Locate the packaged hook DLLs.  Packaged installs use /usr/lib/uur/hook;
 /// a dev checkout falls back to build/hook next to the sources.
-const HOOK_COMPONENTS: &[&str] = &[
+pub(crate) const HOOK_COMPONENTS: &[&str] = &[
     "winlogon.exe",
     "wevtapi.dll",
     "uur-hook.dll",
@@ -45,13 +45,7 @@ fn complete_hook_directory(dir: &Path) -> bool {
 }
 
 fn hook_dir() -> Result<PathBuf> {
-    let mut candidates = vec![
-        PathBuf::from("/usr/lib/uur/hook"),
-        PathBuf::from("/usr/local/lib/uur/hook"),
-    ];
-    if let Ok(home) = std::env::var("HOME") {
-        candidates.push(PathBuf::from(home).join(".local/lib/uur/hook"));
-    }
+    let mut candidates = Vec::new();
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
             candidates.push(dir.join("../lib/uur/hook"));
@@ -59,6 +53,11 @@ fn hook_dir() -> Result<PathBuf> {
             candidates.push(dir.to_path_buf());
         }
     }
+    if let Ok(home) = std::env::var("HOME") {
+        candidates.push(PathBuf::from(home).join(".local/lib/uur/hook"));
+    }
+    candidates.push(PathBuf::from("/usr/local/lib/uur/hook"));
+    candidates.push(PathBuf::from("/usr/lib/uur/hook"));
     candidates
         .into_iter()
         .find(|dir| complete_hook_directory(dir))
@@ -66,22 +65,18 @@ fn hook_dir() -> Result<PathBuf> {
 }
 
 fn hook_source_dir() -> Result<PathBuf> {
-    let mut candidates = vec![PathBuf::from("/usr/lib/uur/hook")];
+    let mut candidates = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("../lib/uur/hook"));
+            candidates.push(dir.join("../../build/hook"));
+        }
+    }
     if let Ok(home) = std::env::var("HOME") {
         candidates.push(PathBuf::from(home).join(".local/lib/uur/hook"));
     }
-    candidates.push(
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|d| d.join("../lib/uur/hook")))
-            .unwrap_or_default(),
-    );
-    candidates.push(
-        std::env::current_exe()
-            .ok()
-            .and_then(|exe| exe.parent().map(|d| d.join("../../build/hook")))
-            .unwrap_or_default(),
-    );
+    candidates.push(PathBuf::from("/usr/local/lib/uur/hook"));
+    candidates.push(PathBuf::from("/usr/lib/uur/hook"));
     candidates.push(
         std::env::current_dir()
             .ok()
@@ -428,8 +423,11 @@ pub fn start() -> Result<()> {
     let _session_lock = acquire_session_lock()?;
     rotate_session_log();
     let config = Config::load()?;
-    let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland");
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    let on_wayland = crate::input::is_wayland_session(
+        session_type.as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+    );
     let prefix = data_dir()?.join("wine");
     let install_dir = crate::wine::find_client_dir(&prefix)
         .context("client installation incomplete; run `uur setup --repair` first")?;
@@ -505,17 +503,15 @@ pub fn start() -> Result<()> {
     let _ = std::fs::remove_file(&terminal_config);
     std::env::set_var("UUR_TERMINAL_CONFIG", &terminal_config);
     resources.cleanup_files.push(terminal_config.clone());
-    resources
-        .helpers
-        .push(ManagedChild::spawn_internal("__terminal", &log)?);
-    wait_for_runtime_file(&terminal_config, &stopping)?;
+    let mut terminal_helper = ManagedChild::spawn_internal("__terminal", &log)?;
+    wait_for_runtime_file(&terminal_config, &stopping, &mut terminal_helper)?;
+    resources.helpers.push(terminal_helper);
     let launcher_config = crate::launcher::runtime_config(&prefix);
     let _ = std::fs::remove_file(&launcher_config);
     resources.cleanup_files.push(launcher_config.clone());
-    resources
-        .helpers
-        .push(ManagedChild::spawn_internal("__launcher", &log)?);
-    wait_for_runtime_file(&launcher_config, &stopping)?;
+    let mut launcher_helper = ManagedChild::spawn_internal("__launcher", &log)?;
+    wait_for_runtime_file(&launcher_config, &stopping, &mut launcher_helper)?;
+    resources.helpers.push(launcher_helper);
     resources
         .helpers
         .push(ManagedChild::spawn_internal("__wallpaper", &log)?);
@@ -880,17 +876,26 @@ fn wait_for_capture(
     }
 }
 
-fn wait_for_runtime_file(path: &Path, stopping: &AtomicBool) -> Result<()> {
+fn wait_for_runtime_file(
+    path: &Path,
+    stopping: &AtomicBool,
+    helper: &mut ManagedChild,
+) -> Result<()> {
     for _ in 0..250 {
         if stopping.load(Ordering::Relaxed) {
             anyhow::bail!("session startup cancelled");
         }
+        helper.ensure_running()?;
         if std::fs::metadata(path).is_ok_and(|metadata| metadata.len() > 0) {
             return Ok(());
         }
         thread::sleep(std::time::Duration::from_millis(20));
     }
-    anyhow::bail!("native terminal bridge did not become ready")
+    anyhow::bail!(
+        "helper {} did not publish runtime file {}",
+        helper.name,
+        path.display()
+    )
 }
 
 fn xft_dpi() -> Option<u32> {

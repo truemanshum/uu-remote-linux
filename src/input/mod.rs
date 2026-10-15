@@ -18,14 +18,26 @@ pub trait InputBackend: Send {
     fn release_all(&mut self) -> Result<()>;
 }
 
+pub(crate) fn is_wayland_session(session_type: Option<&str>, has_wayland_display: bool) -> bool {
+    match session_type {
+        Some("x11") => false,
+        Some("wayland") => true,
+        Some(_) => false,
+        None => has_wayland_display,
+    }
+}
+
 /// Choose the backend for this session:
 ///
 /// - Wayland sessions prefer the standard RemoteDesktop portal, then use the
 ///   kernel-level uinput device when the compositor only provides ScreenCast.
 /// - X11 sessions use XTEST, which needs no extra privileges.
 pub fn select(preferred: &str) -> Result<Box<dyn InputBackend>> {
-    let on_wayland = std::env::var_os("WAYLAND_DISPLAY").is_some()
-        || std::env::var("XDG_SESSION_TYPE").is_ok_and(|session| session == "wayland");
+    let session_type = std::env::var("XDG_SESSION_TYPE").ok();
+    let on_wayland = is_wayland_session(
+        session_type.as_deref(),
+        std::env::var_os("WAYLAND_DISPLAY").is_some(),
+    );
     if !matches!(preferred, "auto" | "portal" | "uinput" | "xtest") {
         anyhow::bail!("unknown input backend {preferred:?}; use auto, portal, uinput, or xtest");
     }
@@ -65,7 +77,20 @@ pub(crate) fn wheel_steps(delta: i32) -> i32 {
 
 #[cfg(test)]
 mod tests {
-    use super::wheel_steps;
+    use super::{is_wayland_session, wheel_steps};
+
+    #[test]
+    fn explicit_session_type_is_authoritative() {
+        assert!(!is_wayland_session(Some("x11"), true));
+        assert!(is_wayland_session(Some("wayland"), false));
+    }
+
+    #[test]
+    fn wayland_display_is_used_when_session_type_is_unavailable() {
+        assert!(is_wayland_session(None, true));
+        assert!(!is_wayland_session(None, false));
+        assert!(!is_wayland_session(Some("unknown"), true));
+    }
 
     #[test]
     fn windows_wheel_units_are_normalized() {
