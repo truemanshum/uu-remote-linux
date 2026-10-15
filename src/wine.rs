@@ -1,10 +1,13 @@
 use anyhow::{Context, Result};
+use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
 use crate::config::Config;
 
-const OFFICIAL_DOWNLOAD_URL: &str = "https://api.nrd.nie.163.com/api/v1/release/dl/1?channel=gwqd";
+#[path = "client_pin.rs"]
+mod client_pin;
+
 const EULA_URL: &str = "https://uuyc.163.com/contact/20240402/40294_1146065.html";
 const SETUP_DLL_OVERRIDES: &str = "wevtapi=b,wtsapi32=b";
 
@@ -41,11 +44,14 @@ pub fn setup(accept_eula: bool, repair: bool) -> Result<()> {
     std::fs::create_dir_all(&cache).context("creating cache directory")?;
     let _prefix_cleanup = SetupPrefix(prefix.clone());
 
-    if !repair
-        && prefix_initialized(&prefix)
-        && find_client_dir(&prefix).is_some()
-        && client_service_registered(&prefix)
-    {
+    let initialized = prefix_initialized(&prefix);
+    let client_installed = find_client_dir(&prefix).is_some();
+    if !repair && initialized && client_installed {
+        if !client_service_registered(&prefix) {
+            anyhow::bail!(
+                "existing UU client has an invalid GameViewerService registration; run `uur setup --repair`"
+            );
+        }
         finish_setup(&prefix)?;
         println!("{}", t!("setup.already_provisioned"));
         return Ok(());
@@ -59,33 +65,27 @@ pub fn setup(accept_eula: bool, repair: bool) -> Result<()> {
         .arg(if repair { "--update" } else { "--init" })
         .status()
         .context("running wineboot")?;
-    if !status.success() || !prefix_initialized(&prefix) {
+    if !status.success() {
+        anyhow::bail!("{}", t!("setup.prefix_failed", status = status));
+    }
+    wait_for_wineserver(&prefix)?;
+    if !prefix_initialized(&prefix) {
         anyhow::bail!("{}", t!("setup.prefix_failed", status = status));
     }
 
-    if find_client_dir(&prefix).is_some() && query_client_service(&prefix)? {
+    if find_client_dir(&prefix).is_some() {
+        if !query_client_service(&prefix)? {
+            anyhow::bail!(
+                "existing UU client has an invalid GameViewerService registration after repair; repair the existing installation before retrying"
+            );
+        }
         finish_setup(&prefix)?;
         println!("{}", t!("setup.repaired", path = prefix.display()));
         return Ok(());
     }
 
-    println!("{}", t!("setup.downloading", url = OFFICIAL_DOWNLOAD_URL));
-    let installer = cache.join("uu-remote-setup.exe");
-    let status = Command::new("curl")
-        .args([
-            "-fL",
-            "--retry",
-            "3",
-            "--progress-bar",
-            "-o",
-            installer.to_string_lossy().as_ref(),
-            OFFICIAL_DOWNLOAD_URL,
-        ])
-        .status()
-        .context("running curl")?;
-    if !status.success() {
-        anyhow::bail!("{}", t!("setup.download_failed"));
-    }
+    let installer = client_pin::acquire(&cache)?;
+    clear_canonical_bin_symlink(&prefix);
 
     println!("{}", t!("setup.installing_client"));
     let status = Command::new("wine")
@@ -150,7 +150,8 @@ pub fn client_service_registered(prefix: &Path) -> bool {
                 .to_ascii_lowercase()
                 .ends_with(r"\\services\\gameviewerservice");
         } else if service_section && line.starts_with("\"ImagePath\"=") {
-            return line.to_ascii_lowercase().contains("gameviewerserver.exe");
+            return persisted_image_path(line)
+                .is_some_and(|command| command_executable_is(&command, "GameViewerService.exe"));
         }
     }
     false
@@ -172,9 +173,76 @@ fn query_client_service(prefix: &Path) -> Result<bool> {
         .output()
         .context("checking the UU Windows service registration")?;
     Ok(output.status.success()
-        && String::from_utf8_lossy(&output.stdout)
-            .to_ascii_lowercase()
-            .contains("gameviewerserver.exe"))
+        && live_image_path(&String::from_utf8_lossy(&output.stdout))
+            .is_some_and(|command| command_executable_is(command, "GameViewerService.exe")))
+}
+
+fn persisted_image_path(line: &str) -> Option<String> {
+    let encoded = line.strip_prefix("\"ImagePath\"=")?.trim();
+    let encoded = encoded.strip_prefix("str(2):").unwrap_or(encoded).trim();
+    let encoded = encoded.strip_prefix('"')?.strip_suffix('"')?;
+    let mut decoded = String::with_capacity(encoded.len());
+    let mut characters = encoded.chars();
+    while let Some(character) = characters.next() {
+        if character == '\\' {
+            match characters.next() {
+                Some('\\') => decoded.push('\\'),
+                Some('"') => decoded.push('"'),
+                Some(escaped) => {
+                    decoded.push('\\');
+                    decoded.push(escaped);
+                }
+                None => return None,
+            }
+        } else {
+            decoded.push(character);
+        }
+    }
+    Some(decoded)
+}
+
+fn live_image_path(output: &str) -> Option<&str> {
+    output.lines().find_map(|line| {
+        let (_, value) = line
+            .split_once("REG_EXPAND_SZ")
+            .or_else(|| line.split_once("REG_SZ"))?;
+        line.contains("ImagePath").then_some(value.trim())
+    })
+}
+
+fn command_executable_is(command: &str, expected: &str) -> bool {
+    let command = command.trim_start();
+    let executable = if let Some(quoted) = command.strip_prefix('"') {
+        let Some((executable, _)) = quoted.split_once('"') else {
+            return false;
+        };
+        executable
+    } else if let Some(end) = unquoted_exe_end(command) {
+        &command[..end]
+    } else {
+        let Some(executable) = command.split_ascii_whitespace().next() else {
+            return false;
+        };
+        executable
+    };
+    executable
+        .rsplit(['\\', '/'])
+        .next()
+        .is_some_and(|name| name.eq_ignore_ascii_case(expected))
+}
+
+fn unquoted_exe_end(command: &str) -> Option<usize> {
+    let lower = command.to_ascii_lowercase();
+    lower.match_indices(".exe").find_map(|(start, matched)| {
+        let end = start + matched.len();
+        let tail = &command[end..];
+        (tail.is_empty()
+            || tail
+                .chars()
+                .next()
+                .is_some_and(|character| character.is_ascii_whitespace()))
+        .then_some(end)
+    })
 }
 
 /// Registry compatibility profile, ported from the field-tested reference
@@ -204,11 +272,38 @@ fn registry_compat_entries() -> Vec<RegistryEntry> {
         ),
         (
             r#"Software\Wine\AppDefaults\gameviewer.exe\DllOverrides"#.to_string(),
-            vec![("msvcp140", "REG_SZ", "native,builtin")],
+            vec![
+                ("msvcp140", "REG_SZ", "native,builtin"),
+                ("msvcp140_1", "REG_SZ", "native,builtin"),
+            ],
         ),
         (
             r#"Software\Wine\AppDefaults\GameViewerServer.exe\DllOverrides"#.to_string(),
-            vec![("msvcp140", "REG_SZ", "native,builtin")],
+            vec![
+                ("msvcp140", "REG_SZ", "native,builtin"),
+                ("msvcp140_1", "REG_SZ", "native,builtin"),
+            ],
+        ),
+        (
+            r#"Software\Wine\AppDefaults\GameViewerService.exe\DllOverrides"#.to_string(),
+            vec![
+                ("msvcp140", "REG_SZ", "native,builtin"),
+                ("msvcp140_1", "REG_SZ", "native,builtin"),
+            ],
+        ),
+        (
+            r#"Software\Wine\AppDefaults\GameViewerLauncher.exe\DllOverrides"#.to_string(),
+            vec![
+                ("msvcp140", "REG_SZ", "native,builtin"),
+                ("msvcp140_1", "REG_SZ", "native,builtin"),
+            ],
+        ),
+        (
+            r#"Software\Wine\AppDefaults\GameViewerHealthd.exe\DllOverrides"#.to_string(),
+            vec![
+                ("msvcp140", "REG_SZ", "native,builtin"),
+                ("msvcp140_1", "REG_SZ", "native,builtin"),
+            ],
         ),
         (
             r"System\CurrentControlSet\Services\GameViewerService".to_string(),
@@ -330,35 +425,185 @@ fn stop_wineserver(prefix: &Path) {
         .status();
 }
 
+fn wait_for_wineserver(prefix: &Path) -> Result<()> {
+    let status = wineserver_wait_command(prefix)
+        .status()
+        .context("waiting for wineboot processes")?;
+    if status.code() == Some(124) {
+        anyhow::bail!("timed out after 60 seconds waiting for Wine prefix initialization");
+    }
+    if !status.success() {
+        anyhow::bail!("wineserver failed while waiting for Wine prefix initialization");
+    }
+    Ok(())
+}
+
+fn wineserver_wait_command(prefix: &Path) -> Command {
+    let mut command = Command::new("timeout");
+    command
+        .env("WINEPREFIX", prefix)
+        .args(["--kill-after=5s", "60s", "wineserver", "-w"]);
+    command
+}
+
 /// Locate the installed client directory regardless of how NetEase spells
 /// the vendor folder ("Netease", "NetEase", ...).  Case matters on Linux.
 pub fn find_client_dir(prefix: &Path) -> Option<PathBuf> {
     let program_files = prefix.join("drive_c").join("Program Files");
-    let entries = std::fs::read_dir(&program_files).ok()?;
-    for entry in entries.flatten() {
-        let name = entry.file_name();
-        if name.to_string_lossy().eq_ignore_ascii_case("netease") {
-            let vendor = entry.path();
-            if let Some(found) = find_dir_recursive(&vendor, "GameViewerServer.exe", 4) {
-                let bin = found.parent()?;
-                let candidate = if bin
+    let vendor = find_child_dir(&program_files, "netease")?;
+    let canonical = find_child_dir(&vendor, "gameviewer").unwrap_or(vendor);
+    repair_canonical_bin_link(&canonical);
+    if client_root_is_complete(&canonical) {
+        return Some(canonical);
+    }
+    sorted_child_dirs(&canonical)
+        .into_iter()
+        .find(|candidate| client_root_is_complete(candidate))
+}
+
+fn clear_canonical_bin_symlink(prefix: &Path) {
+    let program_files = prefix.join("drive_c").join("Program Files");
+    let Some(vendor) = find_child_dir(&program_files, "netease") else {
+        return;
+    };
+    let canonical = find_child_dir(&vendor, "gameviewer").unwrap_or(vendor);
+    let bin = canonical.join("bin");
+    if std::fs::symlink_metadata(&bin).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        let _ = std::fs::remove_file(&bin);
+    }
+}
+
+fn repair_canonical_bin_link(canonical: &Path) {
+    if !find_child_file(canonical, "GameViewer.exe").is_some_and(|path| nonempty_file(&path)) {
+        return;
+    }
+    let Some(best_version) = latest_version_payload_dir(canonical) else {
+        return;
+    };
+    let Some(version_name) = best_version.file_name() else {
+        return;
+    };
+    let bin = canonical.join("bin");
+    let is_symlink =
+        std::fs::symlink_metadata(&bin).is_ok_and(|meta| meta.file_type().is_symlink());
+    let metadata_missing = std::fs::symlink_metadata(&bin).is_err();
+    if !is_symlink && !metadata_missing {
+        return;
+    }
+    let already_current = is_symlink
+        && std::fs::read_link(&bin).is_ok_and(|target| target == Path::new(version_name))
+        && find_child_file(&bin, "GameViewerServer.exe").is_some_and(|path| nonempty_file(&path));
+    if already_current {
+        return;
+    }
+    if is_symlink {
+        let _ = std::fs::remove_file(&bin);
+    }
+    #[cfg(unix)]
+    {
+        let _ = std::os::unix::fs::symlink(version_name, &bin);
+    }
+}
+
+fn latest_version_payload_dir(canonical: &Path) -> Option<PathBuf> {
+    let mut candidates = sorted_child_dirs(canonical)
+        .into_iter()
+        .filter(|dir| {
+            !dir.file_name()
+                .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
+                && find_child_file(dir, "GameViewer.exe").is_some_and(|path| nonempty_file(&path))
+                && find_child_file(dir, "GameViewerServer.exe")
+                    .is_some_and(|path| nonempty_file(&path))
+        })
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| {
+        version_sort_key(left)
+            .cmp(&version_sort_key(right))
+            .then_with(|| lowercase_file_name(left).cmp(&lowercase_file_name(right)))
+    });
+    candidates.pop()
+}
+
+fn version_sort_key(path: &Path) -> Vec<u32> {
+    let name = path
+        .file_name()
+        .unwrap_or_else(|| OsStr::new(""))
+        .to_string_lossy();
+    let mut parts = Vec::new();
+    for segment in name.split('.') {
+        let Ok(number) = segment.parse::<u32>() else {
+            return Vec::new();
+        };
+        parts.push(number);
+    }
+    parts
+}
+
+fn client_root_is_complete(root: &Path) -> bool {
+    find_child_file(root, "GameViewer.exe").is_some_and(|path| nonempty_file(&path))
+        && (find_child_dir(root, "bin")
+            .and_then(|bin| find_child_file(&bin, "GameViewerServer.exe"))
+            .is_some_and(|path| nonempty_file(&path))
+            || sorted_child_dirs(root).into_iter().any(|version| {
+                !version
                     .file_name()
                     .is_some_and(|name| name.eq_ignore_ascii_case("bin"))
-                {
-                    bin.parent()?.to_path_buf()
-                } else {
-                    bin.to_path_buf()
-                };
-                if std::fs::metadata(candidate.join("GameViewer.exe"))
-                    .is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
-                    && std::fs::metadata(&found).is_ok_and(|metadata| metadata.len() > 0)
-                {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
+                    && (find_child_file(&version, "GameViewerServer.exe")
+                        .is_some_and(|path| nonempty_file(&path))
+                        || find_child_dir(&version, "bin")
+                            .and_then(|bin| find_child_file(&bin, "GameViewerServer.exe"))
+                            .is_some_and(|path| nonempty_file(&path)))
+            }))
+}
+
+fn nonempty_file(path: &Path) -> bool {
+    std::fs::metadata(path).is_ok_and(|metadata| metadata.is_file() && metadata.len() > 0)
+}
+
+fn find_child_dir(parent: &Path, name: &str) -> Option<PathBuf> {
+    sorted_child_dirs(parent).into_iter().find(|path| {
+        path.file_name()
+            .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+    })
+}
+
+fn find_child_file(parent: &Path, name: &str) -> Option<PathBuf> {
+    sorted_children(parent).into_iter().find(|path| {
+        path.is_file()
+            && path
+                .file_name()
+                .is_some_and(|candidate| candidate.eq_ignore_ascii_case(name))
+    })
+}
+
+fn sorted_child_dirs(parent: &Path) -> Vec<PathBuf> {
+    sorted_children(parent)
+        .into_iter()
+        .filter(|path| path.is_dir())
+        .collect()
+}
+
+fn sorted_children(parent: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(parent) else {
+        return Vec::new();
+    };
+    let mut paths = entries
+        .flatten()
+        .map(|entry| entry.path())
+        .collect::<Vec<_>>();
+    paths.sort_by(|left, right| {
+        lowercase_file_name(left)
+            .cmp(&lowercase_file_name(right))
+            .then_with(|| left.file_name().cmp(&right.file_name()))
+    });
+    paths
+}
+
+fn lowercase_file_name(path: &Path) -> String {
+    path.file_name()
+        .unwrap_or_else(|| OsStr::new(""))
+        .to_string_lossy()
+        .to_ascii_lowercase()
 }
 
 fn find_dir_recursive(start: &Path, needle: &str, depth: u8) -> Option<PathBuf> {
@@ -515,9 +760,61 @@ fn purge_wine_shortcuts() {
 
 #[cfg(test)]
 mod tests {
+    use super::client_service_registered;
+    use super::command_executable_is;
+    use super::find_client_dir;
+    use super::live_image_path;
     use super::log_pixels_command;
     use super::registry_compat_entries;
-    use std::path::Path;
+    use super::wineserver_wait_command;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static FIXTURE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+    struct FixtureDir(PathBuf);
+
+    impl FixtureDir {
+        fn new(name: &str) -> Self {
+            let path = std::env::temp_dir().join(format!(
+                "uur-wine-{name}-{}-{}",
+                std::process::id(),
+                FIXTURE_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+            ));
+            if path.exists() {
+                fs::remove_dir_all(&path).expect("remove stale test fixture");
+            }
+            fs::create_dir_all(&path).expect("create test fixture");
+            Self(path)
+        }
+
+        fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for FixtureDir {
+        fn drop(&mut self) {
+            fs::remove_dir_all(&self.0).expect("remove test fixture");
+        }
+    }
+
+    fn write_client(root: &Path, service_name: &str) {
+        fs::create_dir_all(root.join("bin")).expect("create client bin directory");
+        fs::write(root.join("GameViewer.exe"), b"client").expect("write client fixture");
+        fs::write(root.join("bin").join(service_name), b"service").expect("write service fixture");
+    }
+
+    fn write_service_registry(prefix: &Path, image_path: &str) {
+        fs::write(
+            prefix.join("system.reg"),
+            format!(
+                "[System\\\\ControlSet001\\\\Services\\\\GameViewerService]\n\"ImagePath\"=str(2):\"{image_path}\"\n"
+            ),
+        )
+        .expect("write service registry fixture");
+    }
 
     #[test]
     fn bundled_cpp_runtime_is_preferred_for_both_uu_processes() {
@@ -533,8 +830,212 @@ mod tests {
     }
 
     #[test]
+    fn service_registration_accepts_actual_service_executable() {
+        let fixture = FixtureDir::new("service-valid");
+        write_service_registry(
+            fixture.path(),
+            r#"\"C:\\Program Files\\Netease\\GameViewer\\GameViewerService.exe\" --service"#,
+        );
+
+        assert!(client_service_registered(fixture.path()));
+    }
+
+    #[test]
+    fn persisted_registry_parser_accepts_direct_reg_sz_image_path() {
+        let fixture = FixtureDir::new("service-direct-reg-sz");
+        fs::write(
+            fixture.path().join("system.reg"),
+            r#"[System\\ControlSet001\\Services\\GameViewerService]
+"ImagePath"="C:\\Program Files\\Netease\\GameViewer\\GameViewerService.exe --service"
+"#,
+        )
+        .expect("write direct REG_SZ registry fixture");
+
+        assert!(client_service_registered(fixture.path()));
+    }
+
+    #[test]
+    fn service_registration_rejects_server_executable() {
+        let fixture = FixtureDir::new("service-server");
+        write_service_registry(
+            fixture.path(),
+            r"C:\Program Files\NetEase\GameViewer\bin\GameViewerServer.exe --service",
+        );
+
+        assert!(!client_service_registered(fixture.path()));
+    }
+
+    #[test]
+    fn service_registration_preserves_mixed_case_matching() {
+        let fixture = FixtureDir::new("service-mixed-case");
+        write_service_registry(
+            fixture.path(),
+            r#"\"C:\\Program Files\\Netease\\GameViewer\\gAmEvIeWeRsErViCe.ExE\" --service"#,
+        );
+
+        assert!(client_service_registered(fixture.path()));
+    }
+
+    #[test]
+    fn service_registration_rejects_executable_substring_spoof() {
+        let fixture = FixtureDir::new("service-spoof");
+        write_service_registry(
+            fixture.path(),
+            r"C:\Program Files\NetEase\GameViewer\bin\NotGameViewerService.exe.bak",
+        );
+
+        assert!(!client_service_registered(fixture.path()));
+    }
+
+    #[test]
+    fn service_registration_rejects_service_name_as_unrelated_argument() {
+        let fixture = FixtureDir::new("service-argument-spoof");
+        write_service_registry(
+            fixture.path(),
+            r#"\"C:\\Windows\\System32\\notepad.exe\" --note GameViewerService.exe"#,
+        );
+
+        assert!(!client_service_registered(fixture.path()));
+    }
+
+    #[test]
+    fn live_registry_parser_checks_image_path_executable() {
+        let output = concat!(
+            "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\GameViewerService\r\n",
+            "    ImagePath    REG_EXPAND_SZ    \"C:\\Program Files\\Netease\\GameViewer\\GameViewerService.exe\" --service\r\n",
+        );
+
+        let image_path = live_image_path(output).expect("parse live ImagePath column");
+
+        assert!(command_executable_is(image_path, "GameViewerService.exe"));
+    }
+
+    #[test]
+    fn live_registry_parser_rejects_service_name_as_argument() {
+        let output = concat!(
+            "HKEY_LOCAL_MACHINE\\System\\CurrentControlSet\\Services\\GameViewerService\r\n",
+            "    ImagePath    REG_SZ    notepad.exe --note GameViewerService.exe\r\n",
+        );
+
+        let image_path = live_image_path(output).expect("parse live ImagePath column");
+
+        assert!(!command_executable_is(image_path, "GameViewerService.exe"));
+    }
+
+    #[test]
+    fn wineserver_wait_is_bounded_to_sixty_seconds() {
+        let prefix = std::env::temp_dir().join("uur-wine-wait-command");
+
+        let command = wineserver_wait_command(&prefix);
+        let args = command
+            .get_args()
+            .map(|argument| argument.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+
+        assert_eq!(args, ["--kill-after=5s", "60s", "wineserver", "-w"]);
+        assert_eq!(
+            command.get_envs().find_map(|(name, value)| {
+                (name == "WINEPREFIX").then(|| value.map(PathBuf::from))
+            }),
+            Some(Some(prefix))
+        );
+    }
+
+    #[test]
+    fn client_discovery_prefers_canonical_root_over_version_subdirectory() {
+        let fixture = FixtureDir::new("client-canonical");
+        let vendor = fixture
+            .path()
+            .join("drive_c")
+            .join("Program Files")
+            .join("NetEase");
+        let canonical = vendor.join("GameViewer");
+        write_client(&canonical, "GameViewerServer.exe");
+        write_client(&canonical.join("4.42.1.2835"), "GameViewerServer.exe");
+
+        assert_eq!(find_client_dir(fixture.path()), Some(canonical));
+    }
+
+    #[test]
+    fn client_discovery_returns_canonical_root_for_versioned_server_layout() {
+        let fixture = FixtureDir::new("client-canonical-versioned-server");
+        let vendor = fixture
+            .path()
+            .join("drive_c")
+            .join("Program Files")
+            .join("NetEase");
+        let canonical = vendor.join("GameViewer");
+        fs::create_dir_all(canonical.join("4.41.1.2335").join("bin"))
+            .expect("create versioned client bin directory");
+        fs::write(canonical.join("GameViewer.exe"), b"client")
+            .expect("write canonical client fixture");
+        fs::write(
+            canonical
+                .join("4.41.1.2335")
+                .join("bin")
+                .join("GameViewerServer.exe"),
+            b"service",
+        )
+        .expect("write versioned service fixture");
+
+        assert_eq!(find_client_dir(fixture.path()), Some(canonical));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn client_discovery_repairs_dangling_bin_symlink_to_latest_version() {
+        let fixture = FixtureDir::new("client-repair-bin-symlink");
+        let canonical = fixture
+            .path()
+            .join("drive_c")
+            .join("Program Files")
+            .join("Netease")
+            .join("GameViewer");
+        let backup = canonical.join("1.0.0.0");
+        let latest = canonical.join("4.42.1.2835");
+        fs::create_dir_all(&backup).expect("create backup version directory");
+        fs::create_dir_all(&latest).expect("create latest version directory");
+        fs::write(canonical.join("GameViewer.exe"), b"launcher").expect("write launcher");
+        fs::write(backup.join("GameViewer.exe"), b"old-ui").expect("write old ui");
+        fs::write(backup.join("GameViewerServer.exe"), b"old-srv").expect("write old server");
+        fs::write(latest.join("GameViewer.exe"), b"new-ui").expect("write new ui");
+        fs::write(latest.join("GameViewerServer.exe"), b"new-srv").expect("write new server");
+        std::os::unix::fs::symlink("4.41.1.2335", canonical.join("bin"))
+            .expect("create dangling bin symlink");
+
+        assert_eq!(find_client_dir(fixture.path()), Some(canonical.clone()));
+        assert_eq!(
+            fs::read(canonical.join("bin").join("GameViewerServer.exe")).expect("read linked bin"),
+            b"new-srv"
+        );
+    }
+
+    #[test]
+    fn client_discovery_accepts_version_before_mixed_case_bin() {
+        let fixture = FixtureDir::new("client-versioned");
+        let versioned = fixture
+            .path()
+            .join("drive_c")
+            .join("Program Files")
+            .join("nEtEaSe")
+            .join("GameViewer")
+            .join("4.42.1.2835");
+        fs::create_dir_all(versioned.join("BiN")).expect("create mixed-case bin directory");
+        fs::write(versioned.join("gAmEvIeWeR.ExE"), b"client")
+            .expect("write mixed-case client fixture");
+        fs::write(
+            versioned.join("BiN").join("gAmEvIeWeRsErVeR.ExE"),
+            b"service",
+        )
+        .expect("write mixed-case service fixture");
+
+        assert_eq!(find_client_dir(fixture.path()), Some(versioned));
+    }
+
+    #[test]
     fn system_dpi_command_writes_winecfg_logpixels_value() {
-        let command = log_pixels_command(Path::new("/tmp/wine-prefix"), 192);
+        let prefix = std::env::temp_dir().join("uur-wine-dpi-command");
+        let command = log_pixels_command(&prefix, 192);
         let args = command
             .get_args()
             .map(|arg| arg.to_string_lossy().into_owned())
