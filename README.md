@@ -1,277 +1,209 @@
 <p align="center">
-  <img src="packaging/uur-icon.png" width="112" alt="UU Remote icon">
+  <img src="packaging/uur-icon.png" width="112" alt="UU Remote for Linux">
 </p>
 
-<h1 align="center">uur</h1>
+<h1 align="center">uu-remote-linux (<code>uur</code>)</h1>
 
 <p align="center">
-  A native Linux compatibility layer for the official NetEase UU Remote client.
+  <strong>Universal Native Linux Compatibility Engine for NetEase UU Remote — X11 &amp; Wayland</strong>
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Version-0.2.0-2ea44f?style=flat-square" alt="Version 0.2.0">
   <img src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux x86_64">
-  <img src="https://img.shields.io/badge/Desktop-X11%20%7C%20Wayland-4A90E2?style=flat-square" alt="X11 and Wayland">
-  <img src="https://img.shields.io/badge/Language-Rust-DEA584?style=flat-square&logo=rust&logoColor=black" alt="Rust">
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT license"></a>
+  <img src="https://img.shields.io/badge/Display-X11%20%7C%20Wayland-4A90E2?style=flat-square" alt="X11 and Wayland">
+  <img src="https://img.shields.io/badge/Distros-Ubuntu%20%7C%20Debian%20%7C%20Mint%20%7C%20Arch%20%7C%20Fedora-E95420?style=flat-square" alt="Supported Linux Distributions">
+  <img src="https://img.shields.io/badge/Language-Rust%20%2B%20C11-DEA584?style=flat-square&logo=rust&logoColor=black" alt="Rust and C11">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT License"></a>
 </p>
 
 <p align="center">
-  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a>
+  <strong>English</strong> · <a href="README.zh-CN.md">简体中文</a> · <a href="CHANGELOG.md">Changelog</a> · <a href="INSTALL.md">Installation Guide</a>
 </p>
 
 > [!IMPORTANT]
-> `uur` does not redistribute UU Remote. It downloads the official Windows
-> installer from NetEase after the user explicitly accepts the upstream EULA.
+> **Clean Open-Source Boundary**: `uu-remote-linux` (`uur`) is a pure open-source compatibility layer and supervisor. It **never** bundles or redistributes proprietary NetEase binaries. The official Windows client is fetched directly from NetEase servers only after the user explicitly accepts the official EULA via `uur setup --accept-eula`.
 
-## ✨ Highlights
+---
 
-| Capability | Linux integration |
-| --- | --- |
-| Control other computers | Official UU interface and media stack under Wine |
-| Allow this Linux computer to be controlled | ScreenCast portal/PipeWire capture and native Linux input |
-| X11 and Wayland | Capability detection instead of distribution or desktop allowlists |
-| Clean lifecycle | Bridges start with UU and stop with its managed Wine prefix |
-| Native tools | Linux PTY terminal, wallpaper, Quick Launch, proxy, and sleep inhibition |
-| Upstream resilience | API-level runtime adapters; no version/RVA patch matrix |
-| Distribution | Arch/pacman, deb, rpm, portable tar.zst, and an AUR recipe |
+## 🌟 Overview
 
-## 🚀 First run
+**`uu-remote-linux`** (`uur` `v0.2.0`) enables Linux workstations and servers across **X11** and **Wayland** desktop environments to run the official NetEase UU Remote (`4.42.1.2835+`) client both as a **controller** (controlling remote Windows/macOS/Linux machines) and as a **controlled host** (allowing Windows, macOS, iOS, or Android devices to remotely control this Linux desktop with low-latency video, audio, keyboard/mouse input, file transfer, and native PTY terminal access).
 
-After installing any package, run these commands **in this order**:
+Instead of relying on fragile binary byte-patching or distribution allowlists, `uu-remote-linux` combines a **zero-desktop-dependency Rust supervisor (`uur`)**, **native PipeWire / Wayland capture helpers**, and a **lightweight Win64 PE API hook (`uur-hook.dll`)** inside an isolated, managed Wine prefix.
 
-```bash
-# 1. Inspect the current Wine, portal, PipeWire, and input capabilities.
-uur doctor
+---
 
-# 2. Accept NetEase's EULA, download the official client, and create the prefix.
-uur setup --accept-eula
+## 🚀 What's New in `v0.2.0` (Key Engineering Highlights)
 
-# 3. Start capture, input, the managed Wine services, and the UU interface.
-uur run
-```
+| Area | Engineering Upgrade in `v0.2.0` | Problem Solved |
+| --- | --- | --- |
+| **Zero-Trap Remote Cursor (`uur-hook.dll`)** | Hooks `USER32!GetCursorInfo` and `USER32!GetCursorPos` across IAT and `GetProcAddress`, synthesizing `CURSOR_SHOWING` + valid `IDC_ARROW` cursor state and synchronized screen coordinates. | Eliminates the Windows controller FPS relative-mouse trap (`ClipCursor`), allowing the remote mouse to freely leave the UU window, click minimize/maximize/close buttons, and switch desktop windows. |
+| **Multi-Version Launcher Auto-Healing (`src/wine.rs`)** | Cleans stale `bin` symlinks before NSIS upgrades and automatically reconciles `<install_root>/bin -> <highest_semver>` (`4.42.1.2835+`). | Fixes silent `GameViewer.exe` exit (`code 0`) and `GameViewerService.exe` launch failures when UU upgrades from `4.41.x` to `4.42.x` under Wine (where NSIS renames the old build to `1.0.0.0`). |
+| **Wine Service & C++ Runtime Provisioning (`src/wine.rs`)** | Parses both `str(2):` (`REG_EXPAND_SZ`) and quoted/unquoted `REG_SZ` `ImagePath` entries for `GameViewerService.exe`, enforces bounded 60s `wineserver -w` barriers, and provisions `msvcp140` + `msvcp140_1` (`native,builtin`) across all 5 UU binaries. | Fixes false `GameViewerService is not registered` failures on Wine 9–11 and prevents `GameViewerServer.exe` / `GameViewerHealthd.exe` startup crashes. |
+| **Authoritative X11 & XTest Input (`src/input.rs`, `src/session.rs`)** | Prioritizes `XDG_SESSION_TYPE=x11` over inherited socket variables, verifies `xtest::get_version` cookies, maps `Insert`/`Delete` and generic `Shift`/`Ctrl`/`Alt` virtual keys, and prioritizes executable-relative / user `~/.local/lib/uur/hook` paths. | Ensures 100% reliable keyboard shortcuts, text editing keys, and pointer injection on Cinnamon, XFCE, MATE, GNOME Xorg, KDE X11, and tiling WMs. |
+| **Forward-Compatible Client Verification (`src/client_pin.rs`)** | Retains SHA-256 fast-path verification for `4.42.1.2835` while allowing validated PE (`MZ` header, $\ge 1\text{ MB}$) installers when NetEase updates its CDN feed (`UUR_STRICT_CLIENT_PIN=1` enforces strict hash pinning). | Prevents `uur setup --accept-eula` from breaking the moment NetEase publishes a new minor build. |
+| **Universal Linux Packaging (`packaging/`)** | Produces both a universal Debian/Ubuntu/Mint package (`uu-remote-linux_0.2.0_amd64.deb`, replacing `uur` and `uu-remote-mint`) and a distro-agnostic portable archive (`uu-remote-linux-0.2.0-linux-x86_64.tar.zst`). | Ready for immediate deployment on Debian, Ubuntu, Linux Mint, Pop!_OS, Arch Linux, Fedora, openSUSE, and NixOS. |
 
-`uur setup` without `--accept-eula` intentionally stops after printing the
-official EULA URL. It does not install the proprietary client.
+---
 
-Many capabilities remain untested; runtime testing so far covers Arch Linux, KDE Plasma, and Wayland.
+## 🖥️ Supported Linux Distributions & Desktop Environments
 
-After setup, UU Remote is also available from the application menu. The menu
-entry launches the complete `uur run` session.
+`uu-remote-linux` detects capabilities at runtime rather than hardcoding distro names:
+
+| Session Type | Desktop Environments / Window Managers | Video Capture Path | Input Injection Path |
+| --- | --- | --- | --- |
+| **X11 (`Xorg`)** | Linux Mint **Cinnamon**, **MATE**, **XFCE**, Ubuntu/GNOME Xorg, KDE Plasma X11, i3, bspwm, Awesome, Openbox | Wine X11 desktop GDI/DXGI (`BitBlt` / `StretchBlt`) + cursor overlay | X11 **XTest** extension (unprivileged, no `/dev/uinput` required) |
+| **Wayland (Portal)** | **KDE Plasma**, **GNOME**, Cosmic, Hyprland, Sway | XDG `ScreenCast` Portal → **PipeWire** (`uur-pw-capture`) → shared-memory triple buffer | XDG `RemoteDesktop` Portal or `/dev/uinput` |
+| **Wayland (Direct)** | **Niri**, wlroots compositors (`wlr-screencopy`) | `zwlr_screencopy_manager_v1` (`uur-wl-capture`) | `/dev/uinput` |
+
+### Binary ABI Footprint
+
+Static ELF64 and PE64 symbol inspection confirms minimal host library coupling:
+
+- `/usr/bin/uur` (`ELF64 PIE`, Full RELRO, NX): links **only** `libc.so.6`, `libm.so.6`, and `libgcc_s.so.1` (`GLIBC_2.39+`). X11 (`x11rb`) and D-Bus (`zbus`) protocols are implemented in pure Rust without linking `libX11` or `libgtk`.
+- `/usr/lib/uur/uur-pw-capture` (`ELF64 PIE`): links `libpipewire-0.3.so.0` and `libc.so.6`.
+- `/usr/lib/uur/uur-wl-capture` (`ELF64 PIE`): links `libwayland-client.so.0` and `libc.so.6`.
+- `/usr/lib/uur/hook/*.dll` & `*.exe` (`PE64 x86_64`): self-contained MinGW-w64 runtime adapters loaded inside Wine (`KERNEL32.dll`, `USER32.dll`, `GDI32.dll`, `WS2_32.dll`, `ADVAPI32.dll`, `msvcrt.dll`).
+
+---
 
 ## 📦 Installation
 
-Download the newest package for the system from the
-[GitHub Releases page](https://github.com/panxuc/uur/releases/latest). Native
-recipes and release artifacts share one version and filesystem layout.
+Download the latest release artifacts from [**GitHub Releases**](https://github.com/truemanshum/uu-remote-linux/releases/latest):
 
-### Arch Linux
+- **`uu-remote-linux_0.2.0_amd64.deb`** — Debian 13+, Ubuntu 24.04+, Linux Mint 22.x, Pop!_OS, Zorin OS
+- **`uu-remote-linux-0.2.0-linux-x86_64.tar.zst`** — Universal portable archive for Arch Linux, Fedora, openSUSE, Gentoo, Void Linux, etc.
+- **`SHA256SUMS`** — SHA-256 checksum manifest
 
-Install a downloaded release package with pacman:
+### 1. Debian, Ubuntu, and Linux Mint (`.deb`)
+
+Because NetEase's official installer wrapper is a 32-bit PE32 executable while the installed UU Remote payload (`GameViewer.exe`, `GameViewerServer.exe`, `GameViewerService.exe`) is 64-bit PE32+, ensure 32-bit Wine support is enabled once:
 
 ```bash
-sudo pacman -U ./dist/uur-0.1.5-1-x86_64.pkg.tar.zst
+# Enable 32-bit architecture for the PE32 installer wrapper (if not already enabled)
+sudo dpkg --add-architecture i386
+sudo apt update
+
+# Verify checksum and install the package
+sha256sum --check uu-remote-linux_0.2.0_amd64.deb.sha256
+sudo apt install ./uu-remote-linux_0.2.0_amd64.deb
 ```
 
-### AUR
+> **Note**: `uu-remote-linux` declares `Provides/Conflicts/Replaces: uur, uu-remote-mint` and supports standard distribution `wine` packages as well as `winehq-staging`, `winehq-stable`, and `winehq-devel` without package conflicts.
 
-After the package is available from AUR:
+### 2. Arch Linux, Fedora, openSUSE & Other Distros (Portable `.tar.zst`)
+
+Extract the portable archive directly into `/` (installs `/usr/bin/uur`, `/usr/lib/uur/*`, desktop launcher, and icons):
 
 ```bash
-paru -S uur
+sha256sum --check uu-remote-linux-0.2.0-linux-x86_64.tar.zst.sha256
+sudo tar --zstd -C / -xf ./uu-remote-linux-0.2.0-linux-x86_64.tar.zst
 ```
 
-### Debian and Ubuntu package family
+Make sure `wine` (with 32-bit + 64-bit support), `pipewire` (for Wayland), `curl`, and CJK fonts (`noto-fonts-cjk` / `google-noto-sans-cjk-ttc-fonts`) are installed via your distribution's package manager.
+
+### 3. Build & Install from Source
 
 ```bash
-sudo apt install ./uur_0.1.5_amd64.deb
-```
+# Build Universal .deb and .tar.zst packages into ./dist/
+bash packaging/build-release.sh
 
-### Fedora and compatible RPM systems
-
-```bash
-sudo dnf install ./uur-0.1.5-1.x86_64.rpm
-```
-
-On systems with different RPM dependency names, install the dependencies
-manually or use the portable archive.
-
-### Portable archive
-
-```bash
-sudo tar --zstd -C / -xf ./uur-0.1.5-linux-x86_64.tar.zst
-```
-
-### Nix and NixOS
-
-```bash
-nix build
-nix run . -- doctor
-```
-
-The flake also exports `nixosModules.default`; see [Nix and NixOS](docs/nix.md).
-
-### Alpine Linux
-
-Alpine edge can build the native musl package layout with:
-
-```bash
-docker build -f packaging/alpine/Dockerfile .
-```
-
-An `APKBUILD` is included under `packaging/alpine/`.
-
-### User installation from source
-
-```bash
+# Or install directly into ~/.local for the current user
 cargo build --release --locked
 ./hook/build.sh
 ./capture/build.sh
 ./scripts/install-user.sh
 ```
 
-The source build requires Rust, a C compiler, PipeWire development files,
-`pkg-config`, and the MinGW-w64 x86_64 toolchain.
+---
 
-Gentoo, Void Linux, Slackware, Solus, ALT Linux, Exherbo, Clear Linux, Mageia,
-OpenMandriva, PCLinuxOS, Venom Linux, Guix System, and other package ecosystems
-can use the portable archive or the shared `packaging/stage.sh` source layout.
+## ⚡ Quick Start (First Run)
 
-See [Platform support and usage](docs/platform-support.md) for distribution
-families, portal choices, X11/Wayland sessions, standalone window managers,
-immutable systems, and libc boundaries.
-
-## 🧭 Daily use
+Run these three commands in your desktop terminal (or launch **UU Remote** from your desktop application menu after setup):
 
 ```bash
-uur run                 # Start or show the managed UU session
-uur doctor              # Read-only environment diagnostics
-uur upstream check      # Check the official NetEase release feed
-uur autostart enable    # Optional: start after graphical login
-uur autostart disable   # Remove the managed login entry
-uur wol status          # Inspect the physical wired adapter's WOL state
-uur display status      # Monitor, window, or portal virtual source
-uur display source virtual
-uur display outputs     # Native Wayland output names
-uur stop                # Stop only uur's helpers and Wine prefix
-uur uninstall --purge --dry-run  # Preview complete user-data cleanup
-uur uninstall --purge   # Confirm cleanup before removing the system package
-```
-
-If UU was started from the desktop, choose **Quit** from the launcher's
-application actions. When running from a terminal, use `uur stop` or press
-Ctrl+C.
-
-On niri, uur provides a native tray and an explicitly enabled direct capture
-path: `uur display backend wayland --output DP-1` (use your output name).
-This uses uinput and captures the chosen monitor without a portal dialog.
-Return to system-consented capture with `uur display backend portal`.
-
-Package removal alone preserves the Wine prefix and account data. See
-[complete removal](docs/distribution.md#package-removal-repair-and-per-user-state)
-for the user-cleanup and package-manager steps.
-
-Diagnostic input overrides:
-
-```bash
-UUR_INPUT_BACKEND=portal uur run
-UUR_INPUT_BACKEND=uinput uur run
-UUR_INPUT_BACKEND=xtest uur run
-```
-
-Use the default `auto` mode after troubleshooting.
-
-## 🖥️ Desktop integration
-
-- A Wayland session with both RemoteDesktop and ScreenCast portals uses one
-  combined, unprivileged session for input and video.
-- A Wayland session with only ScreenCast uses PipeWire for video and uinput
-  for full-desktop input.
-- An X11 session uses Wine's native X11 capture and XTest input.
-- XTest under XWayland is only a partial fallback and is not advertised as
-  full Wayland desktop control.
-
-Run `uur doctor` instead of inferring support from a desktop or distribution
-name.
-
-## 🧩 Native Linux features
-
-Screen capture, keyboard, pointer, lifecycle management, wallpaper metadata,
-native terminal, Quick Launch, proxy synchronization, suspend inhibition, and
-host WOL configuration are implemented. Quick Launch exposes the XDG
-application catalog through UU and resolves each request back to `gio launch`;
-it never accepts an arbitrary command from Wine. Other UU features require
-native Linux service adapters rather than being left inside the Wine prefix:
-
-| Feature | Direction |
-| --- | --- |
-| Terminal | Authenticated UU transport → native PTY and the user's login shell |
-| Quick Launch | UU application inventory → authenticated XDG desktop activation |
-| Wake-on-LAN setup | `uur wol` → real wired interface and NetworkManager profile |
-| Received files | Validated staging → the user's XDG Downloads directory |
-| Sending files | File portal or explicit CLI selection → bounded native staging |
-| Port mapping | Policy-controlled native TCP/UDP broker; loopback by default |
-| Clipboard and phone text | RemoteDesktop Clipboard portal with X11 fallback |
-
-The protocol, security boundaries, lifecycle, and implementation phases are in
-[Native service adapters](docs/native-services.md).
-
-## 🔬 How it works
-
-```text
-Official UU Remote client (managed Wine prefix)
-        │
-        ├─ Windows API adapter ── authenticated input/control protocol
-        │
-        └─ GDI/DXGI capture boundary ◄── private triple-buffer frame transport
-                                              ▲
-Linux supervisor ── ScreenCast portal ── PipeWire
-        │
-        └─ RemoteDesktop portal / uinput / XTest
-```
-
-The Windows ABI adapter is small C code. Session policy, desktop integration,
-capability selection, and lifecycle management are implemented in Rust.
-
-## 🛠️ Troubleshooting
-
-Start with:
-
-```bash
+# 1. Inspect Wine, display server (X11/Wayland), audio, and input readiness
 uur doctor
+
+# 2. Accept NetEase's official EULA, download the official client, and initialize the Wine prefix
+uur setup --accept-eula
+
+# 3. Start the capture/input bridge, managed Wine services, and UU Remote UI
+uur run
 ```
 
-Session logs are stored at:
+---
 
-```text
-${XDG_STATE_HOME:-$HOME/.local/state}/uur/session.log
-```
-
-For Wine diagnostics only:
+## 🧭 Daily CLI Reference
 
 ```bash
-WINEDEBUG=+loaddll uur run
+uur run                          # Start or focus the managed UU Remote session
+uur doctor                       # Run read-only environment & health diagnostics
+uur stop                         # Cleanly stop UU Remote helpers and the managed Wine prefix
+uur autostart enable             # Automatically launch UU Remote on desktop login
+uur autostart disable            # Remove the XDG autostart entry
+uur upstream check               # Query the official NetEase release feed for newer versions
+uur wol status                   # Inspect Wake-on-LAN status on the physical wired NIC
+uur display status               # Inspect active capture backend and display source
+uur uninstall --purge --dry-run  # Preview complete removal of user Wine prefix & cache
+uur uninstall --purge            # Remove user Wine prefix, logs, and cached installers
 ```
 
-Normal runs suppress Wine's non-actionable `fixme` output.
+### Environment Variables (Advanced / Diagnostics)
+
+| Variable | Values | Description |
+| --- | --- | --- |
+| `UUR_INPUT_BACKEND` | `auto` (default), `xtest`, `portal`, `uinput` | Override input injection backend for diagnostics |
+| `UUR_STRICT_CLIENT_PIN` | `0` (default), `1` | When set to `1`, require exact SHA-256 match against the pinned installer manifest |
+| `WINEDEBUG` | e.g. `+loaddll` | Enable verbose Wine loader logs (`fixme` noise is suppressed by default) |
+
+---
+
+## 🔬 Architecture
+
+```text
+┌───────────────────────────────────────────────────────────────────────────┐
+│                Official NetEase UU Remote Client (Wine64)                 │
+│  GameViewer.exe (UI) · GameViewerService.exe · GameViewerServer.exe       │
+├───────────────────────────────────┬───────────────────────────────────────┤
+│   PE64 Runtime Hook (uur-hook.dll)│   PE64 Native Service Proxies         │
+│   • SendInput / SetCursorPos      │   • uur-terminal-proxy.exe (PTY)      │
+│   • GetCursorInfo / GetCursorPos  │   • uur-launch-proxy.exe (XDG Launch) │
+│   • BitBlt / StretchBlt / DXGI    │   • uur-mux-proxy.exe (File/Clipboard)│
+└─────────────────┬─────────────────┴───────────────────┬───────────────────┘
+                  │ Authenticated Local TCP + SHM       │
+┌─────────────────▼─────────────────────────────────────▼───────────────────┐
+│                     Native Linux Supervisor (uur - Rust)                  │
+├───────────────────────────────────┬───────────────────────────────────────┤
+│   Display & Capture Backends      │   Input & Native OS Adapters          │
+│   • X11: Native Wine X11 + Cursor │   • X11: Pure-Rust XTest Injection    │
+│   • Wayland: ScreenCast + PipeWire│   • Wayland: RemoteDesktop / uinput   │
+│   • wlroots: wlr-screencopy       │   • Native PTY, Gio Launch, WOL, D-Bus│
+└───────────────────────────────────┴───────────────────────────────────────┘
+```
+
+---
 
 ## 📚 Documentation
 
-- [Architecture](docs/architecture.md)
-- [Platform support and usage](docs/platform-support.md)
-- [Capture protocol](docs/capture-protocol.md)
-- [Native service adapters](docs/native-services.md)
-- [Feature parity](docs/feature-parity.md)
-- [Upstream adaptation](docs/upstream-adaptation.md)
-- [Package installation](docs/distribution.md)
-- [Nix and NixOS](docs/nix.md)
-- [Windows feature map](docs/windows-feature-map.md)
-- [Video and display backends](docs/video-backends.md)
+- [**Installation & Distribution Guide**](INSTALL.md)
+- [**Changelog & Release History**](CHANGELOG.md)
+- [**System Architecture**](docs/architecture.md)
+- [**Platform Support Matrix**](docs/platform-support.md)
+- [**Package Provenance & Reproducibility**](docs/provenance.md)
+- [**Capture Frame Protocol**](docs/capture-protocol.md)
+- [**Native Linux Service Adapters**](docs/native-services.md)
 
-## 🙏 Credits
+---
 
-The project learned from
-[GuoWQ222/uu-remote-for-linux](https://github.com/GuoWQ222/uu-remote-for-linux),
-[lachlanchen/uu-remote-ubuntu-bridge](https://github.com/lachlanchen/uu-remote-ubuntu-bridge).
+## 🙏 Credits & Upstream References
 
-NetEase UU Remote is proprietary software of NetEase. `uur` is an unofficial
-compatibility project and is not affiliated with NetEase.
+This project is engineered and maintained for universal Linux desktop compatibility and draws upon the work of the open-source community:
+
+- Upstream architecture foundation: [`panxuc/uur`](https://github.com/panxuc/uur) (`v0.1.5`, MIT License)
+- Early Linux Wine & bridge research:
+  - [`GuoWQ222/uu-remote-for-linux`](https://github.com/GuoWQ222/uu-remote-for-linux)
+  - [`lachlanchen/uu-remote-ubuntu-bridge`](https://github.com/lachlanchen/uu-remote-ubuntu-bridge)
+
+**Disclaimer**: NetEase UU Remote (网易UU远程 / GameViewer) is proprietary software owned by NetEase, Inc. `uu-remote-linux` is an independent open-source compatibility layer and is not affiliated with or endorsed by NetEase.

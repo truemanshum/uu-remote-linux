@@ -8,11 +8,11 @@
 # `uur setup` (it is never redistributed by this package).
 
 pkgname=uur
-pkgver=0.1.5
+pkgver=0.2.0
 pkgrel=1
-pkgdesc="Native Linux companion for NetEase UU Remote (X11/Wayland input and capture bridge)"
+pkgdesc="Universal native Linux compatibility engine for NetEase UU Remote (X11/Wayland input and capture bridge)"
 arch=('x86_64')
-url="https://github.com/panxuc/uur"
+url="https://github.com/truemanshum/uu-remote-linux"
 license=('MIT')
 depends=(
     'glibc'

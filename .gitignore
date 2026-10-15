@@ -1,6 +1,7 @@
 /target
 /build
 /dist
+/.work
 /capture/uur-pw-capture
 /capture/uur-wl-capture
 Cargo.lock.orig

@@ -1,264 +1,201 @@
 <p align="center">
-  <img src="packaging/uur-icon.png" width="112" alt="UU 远程图标">
+  <img src="packaging/uur-icon.png" width="112" alt="UU 远程 Linux 版图标">
 </p>
 
-<h1 align="center">uur</h1>
+<h1 align="center">uu-remote-linux (<code>uur</code>)</h1>
 
 <p align="center">
-  适用于网易 UU 远程官方客户端的原生 Linux 兼容层。
+  <strong>适用于全系 Linux 桌面（X11 &amp; Wayland）的网易 UU 远程原生兼容层与运行时引擎</strong>
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Version-0.2.0-2ea44f?style=flat-square" alt="版本 0.2.0">
   <img src="https://img.shields.io/badge/Linux-x86__64-FCC624?style=flat-square&logo=linux&logoColor=black" alt="Linux x86_64">
-  <img src="https://img.shields.io/badge/Desktop-X11%20%7C%20Wayland-4A90E2?style=flat-square" alt="X11 与 Wayland">
-  <img src="https://img.shields.io/badge/Language-Rust-DEA584?style=flat-square&logo=rust&logoColor=black" alt="Rust">
+  <img src="https://img.shields.io/badge/Display-X11%20%7C%20Wayland-4A90E2?style=flat-square" alt="X11 与 Wayland">
+  <img src="https://img.shields.io/badge/Distros-Ubuntu%20%7C%20Debian%20%7C%20Mint%20%7C%20Arch%20%7C%20Fedora-E95420?style=flat-square" alt="全系主流发行版">
+  <img src="https://img.shields.io/badge/Language-Rust%20%2B%20C11-DEA584?style=flat-square&logo=rust&logoColor=black" alt="Rust 与 C11">
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue?style=flat-square" alt="MIT 许可证"></a>
 </p>
 
 <p align="center">
-  <a href="README.md">English</a> · <strong>简体中文</strong>
+  <a href="README.md">English</a> · <strong>简体中文</strong> · <a href="CHANGELOG.md">更新日志</a> · <a href="INSTALL.md">安装指南</a>
 </p>
 
 > [!IMPORTANT]
-> `uur` 不分发 UU 远程客户端。只有用户明确接受网易官方协议后，它才会从网易官方
-> 地址下载 Windows 安装程序。
+> **开源合规边界**：`uu-remote-linux`（命令行工具 `uur`）仅提供开源的 Linux 兼容层、画面/输入桥接器与 Wine 运行时钩子，**不包含、不分发**任何网易专有客户端程序。只有在用户显式执行 `uur setup --accept-eula` 接受网易官方用户协议后，程序才会从网易官方服务器下载安装程序。
 
-## ✨ 功能亮点
+---
 
-| 能力 | Linux 集成方式 |
-| --- | --- |
-| 控制其他电脑 | 在 Wine 中使用 UU 官方界面和媒体栈 |
-| 让本 Linux 设备被控 | ScreenCast Portal/PipeWire 画面与 Linux 原生输入 |
-| X11 与 Wayland | 按实际能力探测，不维护发行版或桌面白名单 |
-| 生命周期 | UU 启动时加载桥接，受管 Wine 前缀退出时一并清理 |
-| 原生工具 | Linux PTY 终端、壁纸、快速启动、代理同步与防休眠 |
-| 上游兼容 | 基于稳定 API 的运行时适配，不维护版本/RVA 补丁矩阵 |
-| 软件分发 | Arch/pacman、deb、rpm、通用 tar.zst 与 AUR 配方 |
+## 🌟 项目简介
 
-## 🚀 首次运行
+**`uu-remote-linux`** (`uur` `v0.2.0`) 让运行在 **X11** 或 **Wayland** 会话下的各类 Linux 发行版（**Ubuntu、Debian、Linux Mint、Pop!_OS、Deepin、Zorin、Arch Linux、Fedora、openSUSE、NixOS** 等）能够完整运行网易 UU 远程（`4.42.1.2835+`）：
 
-安装任意格式的软件包后，必须**按顺序**执行：
+- **作为主控端**：在 Linux 桌面上直接远控其他 Windows、macOS 或 Linux 设备；
+- **作为被控端**：让其他 Windows、macOS、iOS 或 Android 设备远控当前这台 Linux 电脑，支持低延迟桌面画面采集、键盘与鼠标自由操控、远程原生终端（PTY）、文件传输、剪贴板同步与快速启动本地应用。
+
+---
+
+## 🚀 `v0.2.0` 核心工程升级亮点
+
+针对最新官方客户端（`4.42.1.2835+`）与主流 Linux 桌面环境（X11 与 Wayland、Wine 9–11 / WineHQ Staging），`v0.2.0` 在系统兼容层与运行时边界上完成了六项关键工程升级：
+
+| 核心模块 | `v0.2.0` 架构升级细节 | 解决的实际问题 |
+| --- | --- | --- |
+| **防鼠标锁死引擎 (`uur-hook.dll`)** | 拦截 `GameViewerServer.exe` 与 `streamer.dll` 对 `USER32!GetCursorInfo` 和 `GetCursorPos` 的 IAT 导入表与 `GetProcAddress` 动态调用，始终合成 `CURSOR_SHOWING`、有效 `IDC_ARROW` 句柄与实时屏幕坐标。 | **彻底解决 Windows 主控端连接 Linux 后鼠标被锁死在远控窗口内的问题**（不再误判为隐藏光标的 FPS 游戏模式而触发 `ClipCursor`），鼠标可自由移出窗口、点击最小化/全屏/关闭按钮。 |
+| **多版本升级自愈 (`src/wine.rs`)** | 安装前自动清理陈旧符号链接，并在启动时按语义化版本号自动将 `<安装目录>/bin` 指向最高版本目录（如 `4.42.1.2835`）。 | **解决客户端从 `4.41` 升级到 `4.42` 后无法启动的问题**（NSIS 升级器在 Wine 下会将旧目录重命名为 `1.0.0.0` 并导致 `bin` 符号链接悬空、主程序秒退）。 |
+| **服务注册与运行库完备化 (`src/wine.rs`)** | 同时支持 `str(2):` (`REG_EXPAND_SZ`) 与带引号/不带引号的 `REG_SZ` 注册表 `ImagePath` 解析，增加 60 秒有界 `wineserver -w` 同步屏障，并为全部 5 个核心 EXE 注入 `msvcp140` / `msvcp140_1` (`native,builtin`)。 | **解决 `GameViewerService` 误报未注册及 `GameViewerServer.exe` 缺少 C++ 运行库崩溃退出的问题**。 |
+| **X11 / XTest 精准键鼠注入 (`src/input.rs`, `src/session.rs`)** | 优先采信 `XDG_SESSION_TYPE=x11`，严格校验 `xtest::get_version` 握手，补齐 `Insert`、`Delete` 与通用 `Shift`/`Ctrl`/`Alt` 修饰键映射，并优先加载可执行文件同级或 `~/.local/lib/uur/hook` 钩子目录。 | **确保在 Cinnamon、XFCE、MATE、GNOME Xorg、KDE X11 等桌面下键鼠操作与快捷键 100% 精准响应**。 |
+| **官方客户端平滑升级校验 (`src/client_pin.rs`)** | 保留 `4.42.1.2835` SHA-256 快速通道，同时当网易官方发布新版本时自动验证 PE (`MZ`) 可执行头与文件体积后平滑放行（支持通过 `UUR_STRICT_CLIENT_PIN=1` 开启严格哈希锁死）。 | **防止网易官方更新安装包后导致新用户执行 `uur setup --accept-eula` 报错失效**。 |
+| **全系 Linux 通用打包 (`packaging/`)** | 一次构建同时产出 Debian/Ubuntu/Mint 专用包 (`uu-remote-linux_0.2.0_amd64.deb`，自动无缝替换旧版 `uur` 与 `uu-remote-mint`) 和跨发行版通用包 (`uu-remote-linux-0.2.0-linux-x86_64.tar.zst`)。 | **一套代码与产物通吃 Debian 系、Arch 系、RedHat/Fedora 系与其它主流 Linux 发行版**。 |
+
+---
+
+## 🖥️ 跨发行版与桌面环境支持矩阵
+
+`uu-remote-linux` 在运行时自动探测图形会话与系统能力，无需针对特定发行版硬编码白名单：
+
+| 图形会话类型 | 支持的桌面环境 / 窗口管理器 | 画面采集通道 | 键鼠输入注入通道 |
+| --- | --- | --- | --- |
+| **X11 (`Xorg`)** | Linux Mint **Cinnamon** / **MATE** / **XFCE**、Ubuntu GNOME Xorg、KDE Plasma X11、i3、bspwm、Openbox | Wine 原生 X11 桌面采集 (`BitBlt` / `StretchBlt`) + 光标合成 | X11 **XTest** 扩展（免 root、无需配置 `/dev/uinput` 权限） |
+| **Wayland (Portal)** | **KDE Plasma**、**GNOME**、Cosmic、Hyprland、Sway | XDG `ScreenCast` Portal → **PipeWire** (`uur-pw-capture`) → 共享内存三缓冲 | XDG `RemoteDesktop` Portal 或 `/dev/uinput` |
+| **Wayland (Direct)** | **Niri**、支持 `wlr-screencopy` 的合成器 | `zwlr_screencopy_manager_v1` (`uur-wl-capture`) | `/dev/uinput` |
+
+### 极简底层二进制依赖（ABI 边界说明）
+
+- `/usr/bin/uur` (`ELF64 PIE`, Full RELRO, NX)：仅动态链接 `libc.so.6`、`libm.so.6` 与 `libgcc_s.so.1`（`GLIBC_2.39+`）。X11 协议（`x11rb`）与 D-Bus 协议（`zbus`）均由纯 Rust 实现，不依赖特定桌面的 GUI 动态库。
+- `/usr/lib/uur/uur-pw-capture` (`ELF64 PIE`)：仅链接 `libpipewire-0.3.so.0` 与 `libc.so.6`（仅在 Wayland Portal 模式下按需调用）。
+- `/usr/lib/uur/uur-wl-capture` (`ELF64 PIE`)：仅链接 `libwayland-client.so.0` 与 `libc.so.6`（仅在 Wayland 直连模式下按需调用）。
+- `/usr/lib/uur/hook/*` (`PE64 x86_64`)：7 个自包含的 Win64 运行时钩子与代理组件，运行于受管 Wine 前缀内部。
+
+---
+
+## 📦 安装指南
+
+请直接从本仓库的 [**GitHub Releases**](https://github.com/truemanshum/uu-remote-linux/releases/latest) 下载最新发布包：
+
+- **`uu-remote-linux_0.2.0_amd64.deb`** — 适用于 **Ubuntu 24.04+、Linux Mint 22.x、Debian 13+、Pop!_OS、Zorin OS、Deepin** 等 Debian/Ubuntu 系发行版
+- **`uu-remote-linux-0.2.0-linux-x86_64.tar.zst`** — 适用于 **Arch Linux、Fedora、openSUSE、Gentoo、Void Linux** 等所有 Linux `x86_64` 发行版的通用压缩包
+- **`SHA256SUMS`** — 产物 SHA-256 校验清单
+
+### 方式一：Ubuntu / Debian / Linux Mint 安装 (`.deb`)
+
+由于网易官方安装器外壳为 32 位 PE32 程序（安装后的主程序与服务均为 64 位 PE32+），首次安装前请确保已开启 `i386` 多架构支持：
 
 ```bash
-# 1. 检查当前 Wine、Portal、PipeWire 和输入能力。
-uur doctor
+# 1. 开启 32 位架构支持（若已开启可跳过）
+sudo dpkg --add-architecture i386
+sudo apt update
 
-# 2. 接受网易协议、下载官方客户端并创建 Wine 前缀。
-uur setup --accept-eula
-
-# 3. 启动画面、输入桥、受管 Wine 服务和 UU 主界面。
-uur run
+# 2. 校验安装包完整性并安装
+sha256sum --check uu-remote-linux_0.2.0_amd64.deb.sha256
+sudo apt install ./uu-remote-linux_0.2.0_amd64.deb
 ```
 
-不带 `--accept-eula` 的 `uur setup` 只会显示官方协议地址并停止，不会安装专有客户端。
+> **无缝升级说明**：`uu-remote-linux` 已声明 `Provides/Conflicts/Replaces: uur, uu-remote-mint`。如果系统中之前安装过 `uur` 或 `uu-remote-mint`，执行上述 `sudo apt install` 会自动完成无缝替换升级，并完整保留你已登录的账号与设备配置。同时完美兼容系统自带 `wine` 以及官方 `winehq-staging` / `winehq-stable` / `winehq-devel`。
 
-很多功能尚未经测试；目前实际运行测试仅覆盖 Arch Linux、KDE Plasma 和 Wayland。
-
-设置完成后，也可以从应用菜单打开 UU Remote。菜单入口会启动完整的 `uur run` 会话。
-
-## 📦 安装
-
-请从 [GitHub Releases](https://github.com/panxuc/uur/releases/latest) 下载适合当前系统的
-最新软件包。所有原生配方与发布产物使用同一版本和文件布局。
-
-### Arch Linux
-
-使用 pacman 安装下载的正式发布包：
+### 方式二：Arch Linux / Fedora / openSUSE 等发行版安装（通用 `.tar.zst`）
 
 ```bash
-sudo pacman -U ./dist/uur-0.1.5-1-x86_64.pkg.tar.zst
+sha256sum --check uu-remote-linux-0.2.0-linux-x86_64.tar.zst.sha256
+sudo tar --zstd -C / -xf ./uu-remote-linux-0.2.0-linux-x86_64.tar.zst
 ```
 
-### AUR
+解压后请确保已通过系统包管理器安装 `wine`（支持 32/64 位）、`pipewire`（Wayland 会话需要）、`curl` 与中文字体（如 `noto-fonts-cjk`）。
 
-软件包正式发布到 AUR 后可执行：
-
-```bash
-paru -S uur
-```
-
-### Debian、Ubuntu 及兼容发行版
+### 方式三：从源码编译构建
 
 ```bash
-sudo apt install ./uur_0.1.5_amd64.deb
-```
+# 一键构建 .deb 与 .tar.zst 发布包（产物位于 ./dist/）
+bash packaging/build-release.sh
 
-### Fedora 及兼容 RPM 发行版
-
-```bash
-sudo dnf install ./uur-0.1.5-1.x86_64.rpm
-```
-
-如果发行版的 RPM 依赖名称不同，请手动安装依赖或使用通用压缩包。
-
-### 通用压缩包
-
-```bash
-sudo tar --zstd -C / -xf ./uur-0.1.5-linux-x86_64.tar.zst
-```
-
-### Nix 与 NixOS
-
-```bash
-nix build
-nix run . -- doctor
-```
-
-flake 同时导出 `nixosModules.default`，详见 [Nix 与 NixOS](docs/nix.md)。
-
-### Alpine Linux
-
-Alpine edge 可直接构建原生 musl 软件包布局：
-
-```bash
-docker build -f packaging/alpine/Dockerfile .
-```
-
-`packaging/alpine/` 中也提供了 `APKBUILD`。
-
-### 从源码安装到当前用户
-
-```bash
+# 或者直接编译并安装到当前用户的 ~/.local 目录
 cargo build --release --locked
 ./hook/build.sh
 ./capture/build.sh
 ./scripts/install-user.sh
 ```
 
-源码构建需要 Rust、C 编译器、PipeWire 与 Wayland 开发文件（含 `wayland-scanner`）、`pkg-config` 和 MinGW-w64 x86_64
-工具链。
+---
 
-Gentoo、Void Linux、Slackware、Solus、ALT Linux、Exherbo、Clear Linux、Mageia、
-OpenMandriva、PCLinuxOS、Venom Linux、Guix System 等软件包生态可以使用通用压缩包，
-或复用 `packaging/stage.sh` 的源码构建布局。
+## ⚡ 首次运行（仅需 3 步）
 
-发行版家族、Portal 选择、X11/Wayland、独立窗口管理器、不可变系统和 libc 边界见
-[平台支持与使用说明](docs/platform-support.md)。
-
-## 🧭 日常使用
+安装完成后，在桌面终端中按顺序执行以下 3 条命令：
 
 ```bash
-uur run                 # 启动或显示受管 UU 会话
-uur doctor              # 只读环境诊断
-uur upstream check      # 检查网易官方版本
-uur autostart enable    # 可选：图形会话登录后自动启动
-uur autostart disable   # 删除受管登录自启动项
-uur wol status          # 检查物理有线网卡的 WOL 状态
-uur display status      # 查看显示器、窗口或 Portal 虚拟源设置
-uur display source virtual
-uur display outputs     # 查看原生 Wayland 显示器名称
-uur stop                # 只停止 uur 助手与专用 Wine 前缀
-uur uninstall --purge --dry-run  # 预览完整用户数据清理范围
-uur uninstall --purge   # 确认清理后，再用包管理器卸载系统包
-```
-
-从桌面启动 UU 后，可在启动器的应用操作菜单中选择“退出”；从终端运行时可执行
-`uur stop` 或按 Ctrl+C。
-
-niri 可使用原生托盘，并明确启用直接采集：先运行 `uur display outputs` 查看名称，再运行
-`uur display backend wayland --output DP-1`（替换为自己的名称）。此模式使用 uinput，
-直接采集指定显示器，不弹出 Portal 授权框；`uur display backend portal` 可恢复系统授权采集。
-
-仅用包管理器卸载会保留 Wine 环境和账号数据。完整卸载请先以当前用户身份运行
-`uur uninstall --purge`，再执行 `sudo pacman -Rns uur`（Arch）；其他发行版使用
-对应的包管理器。详见[完整卸载说明](docs/distribution.md#package-removal-repair-and-per-user-state)。
-
-输入后端排错：
-
-```bash
-UUR_INPUT_BACKEND=portal uur run
-UUR_INPUT_BACKEND=uinput uur run
-UUR_INPUT_BACKEND=xtest uur run
-```
-
-排错结束后应恢复默认的 `auto` 模式。
-
-## 🖥️ 桌面集成
-
-- 同时提供 RemoteDesktop 和 ScreenCast Portal 的 Wayland 会话，使用一个无特权组合
-  会话传输输入与画面。
-- 只提供 ScreenCast 的 Wayland 会话，使用 PipeWire 捕获和 uinput 全桌面输入。
-- X11 会话使用 Wine 原生 X11 捕获与 XTest 输入。
-- XWayland 下的 XTest 只是局部回退，不会被描述成完整 Wayland 桌面控制。
-
-请以 `uur doctor` 的实际接口检查为准，不要仅根据桌面或发行版名称推断支持情况。
-
-## 🧩 Linux 原生功能
-
-画面、键盘、鼠标、生命周期管理、壁纸信息、原生终端、快速启动、代理同步、防休眠和
-主机 WOL 配置已经实现。快速启动会把 XDG 应用目录提供给 UU，并将每次请求重新解析为
-`gio launch`；Wine 侧不能传入任意命令。其他 UU 功能应由 Linux 原生服务承接，而不是
-留在 Wine 虚拟环境中：
-
-| 功能 | 实现方向 |
-| --- | --- |
-| 终端 | UU 鉴权通道 → 原生 PTY 与当前用户登录 Shell |
-| 快速启动 | UU 应用清单 → 带鉴权的 XDG 桌面应用激活 |
-| 网络唤醒配置 | `uur wol` → 真实有线网卡与 NetworkManager 配置 |
-| 接收文件 | 安全暂存与校验 → 用户 XDG 下载目录 |
-| 发送文件 | File Portal 或显式 CLI 选择 → 有界原生暂存区 |
-| 端口映射 | 带策略的原生 TCP/UDP broker，默认只绑定回环地址 |
-| 剪贴板与手机文字 | RemoteDesktop Clipboard Portal 与 X11 回退 |
-
-协议、安全边界、生命周期和实施阶段见
-[Linux 原生服务适配器](docs/native-services.md)。
-
-## 🔬 工作原理
-
-```text
-官方 UU 远程客户端（受管 Wine 前缀）
-        │
-        ├─ Windows API 适配器 ── 带鉴权的输入/控制协议
-        │
-        └─ GDI/DXGI 捕获边界 ◄── 私有三缓冲画面传输
-                                         ▲
-Linux 监督器 ── ScreenCast Portal ── PipeWire
-        │
-        └─ RemoteDesktop Portal / uinput / XTest
-```
-
-Windows ABI 边界保留少量 C 代码；会话策略、桌面集成、能力选择和生命周期由 Rust
-实现。
-
-## 🛠️ 排错
-
-首先执行：
-
-```bash
+# 1. 检查当前 Wine、图形会话（X11/Wayland）、音频与输入桥接状态
 uur doctor
+
+# 2. 接受网易官方用户协议，自动下载官方客户端并初始化受管 Wine 前缀
+uur setup --accept-eula
+
+# 3. 启动画面采集、输入桥接、后台服务与网易 UU 远程主界面
+uur run
 ```
 
-会话日志位于：
-
-```text
-${XDG_STATE_HOME:-$HOME/.local/state}/uur/session.log
-```
-
-只在需要 Wine 诊断时执行：
+初始化完成后，你也可以直接从系统桌面左下角的**应用程序菜单**点击 **UU Remote** 启动，或开启开机自启：
 
 ```bash
-WINEDEBUG=+loaddll uur run
+uur autostart enable
 ```
 
-正常启动会隐藏无操作价值的 Wine `fixme` 输出。
+---
 
-## 📚 文档
+## 🧭 常用命令速查
 
-- [架构](docs/architecture.md)
-- [平台支持与使用](docs/platform-support.md)
-- [画面传输协议](docs/capture-protocol.md)
-- [Linux 原生服务适配器](docs/native-services.md)
-- [功能对齐](docs/feature-parity.md)
-- [上游自动适配](docs/upstream-adaptation.md)
-- [软件包安装](docs/distribution.md)
-- [Nix 与 NixOS](docs/nix.md)
-- [Windows 功能映射](docs/windows-feature-map.md)
-- [视频与显示后端](docs/video-backends.md)
+```bash
+uur run                          # 启动或唤起网易 UU 远程会话
+uur doctor                       # 运行只读环境诊断（检查 Wine、XTest/Portal、钩子与服务状态）
+uur stop                         # 停止 UU 远程后台服务与受管 Wine 前缀
+uur autostart enable             # 开启桌面登录后自动启动
+uur autostart disable            # 关闭桌面登录自动启动
+uur upstream check               # 检查网易官方是否有新版本客户端发布
+uur wol status                   # 查看当前有线网卡的远程唤醒 (Wake-on-LAN) 状态
+uur display status               # 查看当前显示器/窗口采集状态
+uur uninstall --purge --dry-run  # 预览彻底清理当前用户的 Wine 前缀与缓存目录
+uur uninstall --purge            # 彻底清理当前用户的 Wine 前缀、日志与安装包缓存
+```
 
-## 🙏 致谢
+---
 
-本项目参考了
-[GuoWQ222/uu-remote-for-linux](https://github.com/GuoWQ222/uu-remote-for-linux)、
-[lachlanchen/uu-remote-ubuntu-bridge](https://github.com/lachlanchen/uu-remote-ubuntu-bridge)。
+## 🛠️ 故障排查
 
-网易 UU 远程是网易的专有软件。`uur` 是非官方兼容项目，与网易无隶属或合作关系。
+1. **首选诊断命令**：
+   ```bash
+   uur doctor
+   ```
+   确保所有检查项均为 `ok`（在 X11 会话下 ` Wayland runtime` 显示 `warn` 属于正常现象，因为 X11 直接使用原生采集与 `xtest` 注入）。
+2. **查看会话运行日志**：
+   ```bash
+   cat "${XDG_STATE_HOME:-$HOME/.local/state}/uur/session.log"
+   ```
+3. **验证防鼠标锁死钩子状态**：
+   在远控连接期间，可查看受管 Wine 前缀下的钩子状态文件：
+   ```bash
+   cat ~/.local/share/uur/wine/drive_c/uur-capture-status-*.txt
+   ```
+   其中 `iat=94` 表示 `SendInput`、`GetCursorInfo`、`GetCursorPos`、`BitBlt`、`StretchBlt` 等导入表已成功挂钩，`cursor_info=` 会实时统计远控端查询光标状态的次数。
+
+---
+
+## 📚 详细文档导航
+
+- [**全平台安装与配置指南**](INSTALL.md)
+- [**版本更新日志 (CHANGELOG)**](CHANGELOG.md)
+- [**系统架构设计**](docs/architecture.md)
+- [**跨平台支持说明**](docs/platform-support.md)
+- [**构建溯源与 ABI 边界说明**](docs/provenance.md)
+- [**画面采集帧协议**](docs/capture-protocol.md)
+- [**Linux 原生服务适配器**](docs/native-services.md)
+
+---
+
+## 🙏 致谢与参考项目
+
+本项目面向全系 Linux 桌面环境进行了系统级兼容层设计与工程重构，特此感谢以下开源项目的研究与贡献：
+
+- 上游基础架构参考：[`panxuc/uur`](https://github.com/panxuc/uur) (`v0.1.5`, MIT License)
+- 早期 Linux Wine 运行时与桥接方案探索：
+  - [`GuoWQ222/uu-remote-for-linux`](https://github.com/GuoWQ222/uu-remote-for-linux)
+  - [`lachlanchen/uu-remote-ubuntu-bridge`](https://github.com/lachlanchen/uu-remote-ubuntu-bridge)
+
+**免责声明**：网易 UU 远程（GameViewer）是网易公司（NetEase, Inc.）的专有商业软件。`uu-remote-linux` 是独立的第三方开源系统兼容层项目，与网易公司不存在任何隶属或官方背书关系。

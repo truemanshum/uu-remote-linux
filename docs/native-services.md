@@ -137,7 +137,7 @@ Linux network namespace. The native broker will:
   environment variables to Wine;
 - close every listener and connection when `uur run` ends.
 
-The remaining reverse-engineering task is the stable control-plane boundary
+The remaining protocol integration work is the control-plane boundary
 between UU's `PortMappingModule` and its tunnel implementation. The adapter
 attaches at an API or helper-process boundary.
 

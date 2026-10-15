@@ -24,10 +24,12 @@ install -Dm0644 "$project_root/packaging/uur-icon.png" \
     "$destination$prefix/share/icons/hicolor/256x256/apps/uur.png"
 install -Dm0644 "$project_root/packaging/io.github.panxuc.uur.metainfo.xml" \
     "$destination$prefix/share/metainfo/io.github.panxuc.uur.metainfo.xml"
-install -Dm0644 "$project_root/packaging/60-uur-uinput.rules" \
-    "$destination$prefix/lib/udev/rules.d/60-uur-uinput.rules"
-install -Dm0644 "$project_root/packaging/modules-load.conf" \
-    "$destination$prefix/lib/modules-load.d/uur.conf"
+if [[ ${UUR_STAGE_UINPUT:-1} == 1 ]]; then
+    install -Dm0644 "$project_root/packaging/60-uur-uinput.rules" \
+        "$destination$prefix/lib/udev/rules.d/60-uur-uinput.rules"
+    install -Dm0644 "$project_root/packaging/modules-load.conf" \
+        "$destination$prefix/lib/modules-load.d/uur.conf"
+fi
 install -Dm0644 "$project_root/LICENSE" \
     "$destination$prefix/share/licenses/uur/LICENSE"
 install -Dm0644 "$project_root/NOTICE" \

@@ -1,10 +1,10 @@
 [package]
 name = "uur"
-version = "0.1.5"
+version = "0.2.0"
 edition = "2021"
-description = "Native Linux companion for NetEase UU Remote: X11/Wayland input and capture, packaged as a regular desktop app"
+description = "Native Linux compatibility engine for NetEase UU Remote across X11 and Wayland desktops"
 license = "MIT"
-repository = "https://github.com/panxuc/uur"
+repository = "https://github.com/truemanshum/uu-remote-linux"
 default-run = "uur"
 
 [dependencies]

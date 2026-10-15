@@ -10,7 +10,7 @@
   </description>
   <developer id="io.github.panxuc"><name>uur contributors</name></developer>
   <launchable type="desktop-id">uur.desktop</launchable>
-  <url type="homepage">https://github.com/panxuc/uur</url>
+  <url type="homepage">https://github.com/truemanshum/uu-remote-linux</url>
   <provides><binary>uur</binary></provides>
   <content_rating type="oars-1.1" />
 </component>

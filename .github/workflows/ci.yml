@@ -1,86 +1,77 @@
-name: ci
+name: Linux Release & CI
 
 on:
+  workflow_dispatch:
   push:
-    branches: [master]
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
-  rust:
-    runs-on: ubuntu-latest
+  build-and-test:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    env:
+      CARGO_TERM_COLOR: always
+      TMPDIR: ${{ github.workspace }}/.work/tmp
+      UUR_WORK_ROOT: ${{ github.workspace }}/.work/linux-pkg
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          components: clippy, rustfmt
-      - name: Rust checks
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Verify pinned Rust toolchain
         run: |
-          cargo fmt --check
-          cargo clippy --locked --all-targets -- -D warnings
-          cargo test --locked --all-targets
-          cc -std=c11 -O2 -Wall -Wextra -Werror tests/frame-protocol.c -o /tmp/frame-protocol
-          /tmp/frame-protocol
-          cc -std=c11 -O2 -Wall -Wextra -Werror tests/cursor-overlay.c -o /tmp/cursor-overlay
-          /tmp/cursor-overlay
-      - name: Build
-        run: cargo build --locked --release
-
-  hook:
-    runs-on: ubuntu-latest
-    container: archlinux:base-devel
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install mingw toolchain
+          test "$(rustc --version | cut -d' ' -f2)" = 1.99.0
+          rustup component add clippy rustfmt
+      - name: Install build and Wine test dependencies
         run: |
-          pacman -Syu --noconfirm mingw-w64-gcc mingw-w64-binutils
-      - name: Build PE components
-        run: ./hook/build.sh
-      - uses: actions/upload-artifact@v4
-        with:
-          name: uur-hook-pe
-          path: build/hook/*.dll
-
-  package-layout:
-    runs-on: ubuntu-22.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install native and PE build dependencies
-        run: |
+          sudo dpkg --add-architecture i386
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             appstream binutils-mingw-w64-x86-64 desktop-file-utils \
-            gcc gcc-mingw-w64-x86-64 libpipewire-0.3-dev libwayland-dev pkg-config \
-            wine xvfb
-      - name: Build and stage
+            gcc gcc-mingw-w64-x86-64 libpipewire-0.3-dev libwayland-dev \
+            pkg-config wine wine64 wine32:i386 xauth xvfb zstd
+      - name: Check Rust and C sources
         run: |
-          cargo build --release --locked
-          ./hook/build.sh
-          ./capture/build.sh
-          stage="$(mktemp -d)"
-          ./packaging/stage.sh "$stage"
-          test -x "$stage/usr/bin/uur"
-          test -x "$stage/usr/lib/uur/uur-pw-capture"
-          test -f "$stage/usr/lib/uur/hook/winlogon.exe"
+          mkdir -p "$TMPDIR"
+          cargo fmt --all -- --check
+          cargo check --locked --all-targets
+          cargo clippy --locked --all-targets -- -D warnings
+          cargo test --locked --all-targets
+          xvfb-run -a cargo test --locked live_xtest_connects_and_checks_fake_input -- --ignored
+          temporary="$(mktemp -d "$GITHUB_WORKSPACE/.work/c-tests.XXXXXX")"
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/frame-protocol.c -o "$temporary/frame-protocol"
+          "$temporary/frame-protocol"
+          cc -std=c11 -O2 -Wall -Wextra -Werror tests/cursor-overlay.c -o "$temporary/cursor-overlay"
+          "$temporary/cursor-overlay"
+      - name: Build universal Linux packages and run Wine hooks
+        run: |
+          bash packaging/build-release.sh
+          bash tests/hook-smoke.sh
+          bash tests/terminal-smoke.sh
+      - name: Validate Debian and Portable Linux packages
+        run: |
+          deb="$(find dist -maxdepth 1 -name 'uu-remote-linux_*_amd64.deb' -print -quit)"
+          tarball="$(find dist -maxdepth 1 -name 'uu-remote-linux-*-linux-x86_64.tar.zst' -print -quit)"
+          test -n "$deb"
+          test -n "$tarball"
+          (cd dist && sha256sum --check --strict SHA256SUMS)
+          dpkg-deb --info "$deb"
+          dpkg-deb --contents "$deb"
+          bash tests/verify-package.sh "$deb"
+          stage="$(mktemp -d "$GITHUB_WORKSPACE/.work/package-layout.XXXXXX")"
+          dpkg-deb --extract "$deb" "$stage"
           desktop-file-validate "$stage/usr/share/applications/uur.desktop"
           appstreamcli validate --no-net "$stage/usr/share/metainfo/io.github.panxuc.uur.metainfo.xml"
-          ./tests/hook-smoke.sh
-          ./tests/terminal-smoke.sh
-
-  alpine-musl:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build and test the musl package layout
-        run: docker build --target build -f packaging/alpine/Dockerfile .
-
-  nix:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: cachix/install-nix-action@v31
-      - name: Evaluate and build the flake
-        run: |
-          nix flake check --no-build
-          CARGO_BUILD_JOBS=1 NIX_BUILD_CORES=1 \
-            nix build .#uur --max-jobs 1 --cores 1
+      - name: Upload Linux release artifacts
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: uu-remote-linux-packages-${{ github.sha }}
+          path: |
+            dist/uu-remote-linux_*_amd64.deb
+            dist/uu-remote-linux_*_amd64.deb.sha256
+            dist/uu-remote-linux-*-linux-x86_64.tar.zst
+            dist/uu-remote-linux-*-linux-x86_64.tar.zst.sha256
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 14

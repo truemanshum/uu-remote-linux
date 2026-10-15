@@ -53,6 +53,31 @@ substitute those frames before the proprietary application consumes them.
 The implementation supports GDI today and keeps DXGI behind the same adapter
 surface.
 
+### Cursor state synthesis (`GetCursorInfo` / `GetCursorPos`)
+
+Under Wine's X11 or headless server environment, `GameViewerServer.exe` and
+`streamer.dll` query `USER32!GetCursorInfo` and `USER32!GetCursorPos` to detect
+whether the remote desktop has a visible hardware cursor. When no foreground
+Win32 window owns the cursor inside the Wine prefix, `GetCursorInfo` can report
+`flags == 0` (cursor hidden) or `hCursor == NULL`, causing remote controllers to
+enter relative-mouse capture mode (`ClipCursor`).
+
+`uur-hook.dll` interposes `GetCursorInfo` and `GetCursorPos` across both PE
+Import Address Tables (IAT) and `GetProcAddress` lookups, tracking pointer
+coordinates from `SetCursorPos` and `SendInput(MOUSEEVENTF_MOVE)` and reporting
+`CURSOR_SHOWING` with a valid `IDC_ARROW` handle so the remote controller
+remains in normal desktop pointer mode.
+
+### Multi-version Wine prefix reconciliation
+
+When the official NSIS updater upgrades an existing installation inside Wine,
+it renames the prior version directory to `1.0.0.0` and unpacks the new payload
+into a versioned directory (`<major>.<minor>.<patch>.<build>`). Because the
+top-level `GameViewer.exe` launcher and `GameViewerService.exe` resolve child
+binaries through `<install_root>\bin\`, `uur` reconciles `<install_root>/bin` to
+point to the highest semantic version directory before and after setup or
+session startup.
+
 ## Lifetime and isolation
 
 `uur run` is the only supervisor. It creates each native helper in a dedicated

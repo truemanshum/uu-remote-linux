@@ -25,7 +25,7 @@ let
 in
 rustPlatform.buildRustPackage {
   pname = "uur";
-  version = "0.1.5";
+  version = "0.2.0";
 
   src = lib.cleanSource ../.;
   cargoLock.lockFile = ../Cargo.lock;
@@ -74,8 +74,8 @@ rustPlatform.buildRustPackage {
   '';
 
   meta = {
-    description = "Native Linux companion for NetEase UU Remote";
-    homepage = "https://github.com/panxuc/uur";
+    description = "Universal native Linux compatibility engine for NetEase UU Remote";
+    homepage = "https://github.com/truemanshum/uu-remote-linux";
     license = lib.licenses.mit;
     mainProgram = "uur";
     platforms = [ "x86_64-linux" ];
